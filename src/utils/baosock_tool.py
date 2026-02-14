@@ -3,6 +3,8 @@ import time
 import baostock as bs
 import pandas as pd
 from datetime import datetime, timedelta
+
+from logs.logger import LogManager
 from redis_tool import RedisUtil
 from mysql_tool import MySQLUtil
 from config.baostock_config import BAOSTOCK_CONFIG, get_stock_daly_fields, get_stock_industry_fields
@@ -18,6 +20,7 @@ class BaostockFetcher:
         self.mysql_manager.connect()
         self.bs_config = BAOSTOCK_CONFIG().get_config()
         self.now_date = datetime.now().strftime('%Y-%m-%d')
+        self.logger = LogManager.get_logger("baostock_fetcher")
 
     def login(self):
         lg = bs.login()
@@ -115,9 +118,17 @@ class BaostockFetcher:
             # 处理日线数据
             df['market_type'] = df['stock_code'].apply(lambda x: x[:2])
             df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:])
-            self.mysql_manager.batch_insert_or_update('stock_history_date_price', df, ['stock_code', 'stock_date'])
-            self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date)
-            print(f"股票 {stock_code} 处理完成")
+            rows = self.mysql_manager.batch_insert_or_update('stock_history_date_price', df,
+                                                             ['stock_code', 'stock_date'])
+            if rows > 0:
+                print(f"股票 {stock_code} 插入数据库成功！")
+                bool = self.update_stock_record(df['stock_code'].iloc[0], 'update_stock_date', df['stock_date'].max())
+                if bool:
+                    self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date)
+            else:
+                self.logger.error(
+                    f"股票 {stock_code} 插入失败,插入日期：{df['stock_date'].min()} → {df['stock_date'].max()}")
+
             return df
         except Exception as e:
             print(f"股票 {stock_code} 处理失败: {e}")
@@ -198,9 +209,11 @@ class BaostockFetcher:
         sql = f"UPDATE update_stock_record SET {update_column} = %s WHERE stock_code = %s"
         rows = self.mysql_manager.execute(sql, (update_date, stock_code))
         if rows > 0:
-            print(f"股票 {stock_code} 已处理!")
+            print(f"股票 {stock_code} 记录表更新成功!")
+            return True
         else:
-            print(f"股票 {stock_code} 处理失败!")
+            self.logger.error(f"股票 {stock_code} 记录表更新失败!")
+            return False
 
 
 if __name__ == '__main__':
