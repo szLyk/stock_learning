@@ -101,7 +101,6 @@ class BaostockFetcher:
             .replace(r'^\s*$', None, regex=True)
         if df.empty:
             self.logger.warning(f"股票 {stock_code} 获取数据为空 请求日期为 {start_date} ~ {end_date}")
-            return pd.DataFrame.empty
         return df
 
     def batch_fetch_daily_data(self, stock_codes, date_type):
@@ -160,9 +159,8 @@ class BaostockFetcher:
                 else:
                     self.logger.error(
                         f"股票 {stock_code} 插入{daily_type['update_table']}失败,插入日期：{df['stock_date'].min()} → {df['stock_date'].max()}")
-                return df
-            else:
-                return None
+            return df
+
         except Exception as e:
             print(f"股票 {stock_code} 处理失败: {e}")
 
@@ -251,6 +249,6 @@ class BaostockFetcher:
 
 if __name__ == '__main__':
     fetcher = BaostockFetcher()
-    fetcher.batch_process_stock_data('w')
+    # fetcher.batch_process_stock_data('w')
     fetcher.batch_process_stock_data('m')
     fetcher.close()
