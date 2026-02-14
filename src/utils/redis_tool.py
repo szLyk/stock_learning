@@ -30,29 +30,29 @@ class RedisUtil:
         except Exception as e:
             raise RuntimeError(f"Redis连接失败：{str(e)}")
 
-    def add_unprocessed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d")):
+    def add_unprocessed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d"), date_type='d'):
         """批量添加未处理的股票代码"""
-        key = f"stock_data:{date}:unprocessed"
+        key = f"{date_type}:stock_data:{date}:unprocessed"
         self.client.sadd(key, *stock_list)
 
-    def add_processed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d")):
+    def add_processed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d"), date_type='d'):
         """批量添加已处理的股票代码"""
-        key = f"stock_data:{date}:processed"
+        key = f"{date_type}:stock_data:{date}:processed"
         self.client.sadd(key, *stock_list)
 
-    def remove_unprocessed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d")):
+    def remove_unprocessed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d"), date_type='d'):
         """批量移除未处理的股票代码"""
-        key = f"stock_data:{date}:unprocessed"
+        key = f"{date_type}:stock_data:{date}:unprocessed"
         self.client.srem(key, *stock_list)
 
-    def remove_processed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d")):
+    def remove_processed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d"), date_type='d'):
         """批量移除已处理的股票代码"""
-        key = f"stock_data:{date}:processed"
+        key = f"{date_type}:stock_data:{date}:processed"
         self.client.srem(key, *stock_list)
 
-    def get_unprocessed_stocks(self, date=datetime.now().strftime("%Y-%m-%d")) -> List[str]:
+    def get_unprocessed_stocks(self, date=datetime.now().strftime("%Y-%m-%d"), date_type='d') -> List[str]:
         """获取未处理的股票代码列表（修复decode错误，兼容bytes/str类型）"""
-        key = f"stock_data:{date}:unprocessed"
+        key = f"{date_type}:stock_data:{date}:unprocessed"
         # 先获取Redis中的原始数据
         raw_stocks = self.client.smembers(key)
         # 兼容处理：如果是bytes则decode，已是str则直接使用
@@ -67,9 +67,9 @@ class RedisUtil:
                 processed_stocks.append(str(stock))
         return processed_stocks
 
-    def get_processed_stocks(self, date=datetime.now().strftime("%Y-%m-%d")) -> List[str]:
+    def get_processed_stocks(self, date=datetime.now().strftime("%Y-%m-%d"), date_type='d') -> List[str]:
         """获取已处理的股票代码列表（修复decode错误，兼容str/bytes类型）"""
-        key = f"stock_data:{date}:processed"
+        key = f"{date_type}:stock_data:{date}:processed"
         # 获取Redis中的原始数据
         raw_stocks = self.client.smembers(key)
         processed_stocks = []
@@ -96,9 +96,9 @@ class RedisUtil:
 
         return processed_stocks
 
-    def is_stock_processed(self, stock_code: str, date=datetime.now().strftime("%Y-%m-%d")) -> bool:
+    def is_stock_processed(self, stock_code: str, date=datetime.now().strftime("%Y-%m-%d"), date_type='d') -> bool:
         """检查股票是否已处理"""
-        key = f"stock_data:{date}:processed"
+        key = f"{date_type}:stock_data:{date}:processed"
         return self.client.sismember(key, stock_code)
 
     def set_last_update_time(self, stock_code: str, update_time: Optional[str] = None,

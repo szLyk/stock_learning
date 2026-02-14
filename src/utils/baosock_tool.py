@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from logs.logger import LogManager
 from redis_tool import RedisUtil
 from mysql_tool import MySQLUtil
-from config.baostock_config import BAOSTOCK_CONFIG, get_stock_daly_fields, get_stock_industry_fields
+from config.baostock_config import *
 from time_tool import get_last_some_time
 
 
@@ -30,14 +30,41 @@ class BaostockFetcher:
     def logout(self):
         bs.logout()
 
-    def fetch_daily_data(self, stock_code, start_date=None, end_date=None):
+    def get_daily_type(self, date_type='d'):
+        # 返回一个字典 默认字典是 update_column=update_stock_date date_files=date_stock_fields
+        if date_type == 'w':
+            return {
+                'update_column': 'update_stock_week',
+                'date_files': 'week_stock_fields',
+                'update_table': 'stock_history_week_price',
+                'files': get_stock_week_fields(),
+                'frequency': 'week_frequency'
+            }
+        if date_type == 'm':
+            return {
+                'update_column': 'update_stock_month',
+                'date_files': 'month_stock_fields',
+                'update_table': 'stock_history_month_price',
+                'files': get_stock_month_fields(),
+                'frequency': 'month_frequency'
+            }
+
+        return {
+            'update_column': 'update_stock_date',
+            'date_files': 'date_stock_fields',
+            'update_table': 'stock_history_date_price',
+            'files': get_stock_daly_fields(),
+            'frequency': 'day_frequency'
+        }
+
+    def fetch_daily_data(self, daily_type, stock_code, start_date=None, end_date=None):
         """获取日线数据，支持断点续传"""
         code = stock_code[-6:]
         if not start_date:
             # 获取最后更新日期
-            query_sql = "SELECt CAST(update_stock_date as CHAR) as update_stock_date FROM update_stock_record WHERE stock_code = %s"
+            query_sql = f"SELECt CAST({daily_type['update_column']} as CHAR) as {daily_type['update_column']} FROM update_stock_record WHERE stock_code = %s"
             last_update_date = self.mysql_manager.query_one(query_sql, code)
-            last_update_date = last_update_date['update_stock_date']
+            last_update_date = last_update_date[daily_type['update_column']]
             if not last_update_date:
                 start_date = '1990-01-01'
             else:
@@ -50,11 +77,11 @@ class BaostockFetcher:
         print(f"开始获取 {stock_code} 数据：{start_date} ~ {end_date}")
         rs = bs.query_history_k_data_plus(
             code=stock_code,
-            fields=self.bs_config['stock_fields'],
+            fields=f"{self.bs_config[daily_type['date_files']]}",
             start_date=f'{start_date}',
             end_date=f'{end_date}',
-            frequency=self.bs_config['day_frequency'],
-            adjustflag=self.bs_config['adjustflag']
+            frequency=f"{self.bs_config[daily_type['frequency']]}",
+            adjustflag=f"{self.bs_config['adjustflag']}"
         )
 
         # 关键：判断rs是否为None（接口调用失败）
@@ -70,70 +97,76 @@ class BaostockFetcher:
             data_list.append(rs.get_row_data())
 
         df = pd.DataFrame(data_list, columns=rs.fields) \
-            .rename(columns=get_stock_daly_fields()) \
+            .rename(columns=daily_type['files']) \
             .replace(r'^\s*$', None, regex=True)
+        if df.empty:
+            self.logger.warning(f"股票 {stock_code} 获取数据为空 请求日期为 {start_date} ~ {end_date}")
+            return pd.DataFrame.empty
         return df
 
-    def batch_fetch_daily_data(self, stock_codes):
+    def batch_fetch_daily_data(self, stock_codes, date_type):
         """批量获取日线数据"""
         for stock_code in stock_codes:
             # 随机休眠3秒
             time.sleep(3)
-            df = self.process_stock(stock_code)
+            df = self.process_stock(stock_code, date_type)
             if not df.empty:
                 print(f"股票 {stock_code} 处理完成")
 
     # 批量处理股票数据
-    def batch_process_stock_data(self):
-        while True:
-            # 获取待处理的股票代码
-            pending_stocks = self.get_pending_stocks()
-            # 批量处理股票数据
-            self.batch_fetch_daily_data(pending_stocks)
+    def batch_process_stock_data(self, date_type):
+        # 获取待处理的股票代码
+        pending_stocks = self.get_pending_stocks(date_type)
+        # 批量处理股票数据
+        self.batch_fetch_daily_data(pending_stocks, date_type)
 
-    def get_pending_stocks(self):
+    def get_pending_stocks(self, date_type):
         """从Redis中获取待处理的股票代码"""
-        pending_stocks = self.redis_manager.get_unprocessed_stocks(self.now_date)
+        pending_stocks = self.redis_manager.get_unprocessed_stocks(self.now_date, date_type)
         if not pending_stocks:
             # 如果Redis中没有待处理的股票代码，从MySQL中获取
             pending_stocks = self.get_pending_stocks_from_mysql()
-            self.redis_manager.add_unprocessed_stocks(pending_stocks['stock_code'].tolist(), self.now_date)
+            self.redis_manager.add_unprocessed_stocks(pending_stocks['stock_code'].tolist(), self.now_date, date_type)
             # 把df转成列表
             pending_stocks = pending_stocks['stock_code'].tolist()
         return pending_stocks
 
     def get_pending_stocks_from_mysql(self):
         """从MySQL中获取待处理的股票代码"""
-        query = f"SELECT stock_code as stock,market_type FROM update_stock_record;"
+        query = f"SELECT stock_code as stock,market_type FROM update_stock_record"
         result = self.mysql_manager.query_all(query, ())
         df = pd.DataFrame(result)
         df['stock_code'] = df['market_type'] + '.' + df['stock']
         return df
 
-    def process_stock(self, stock_code):
+    def process_stock(self, stock_code, date_type='d'):
+        # 获取字典
+        daily_type = self.get_daily_type(date_type)
         """处理单只股票的数据"""
         try:
             # 获取日线数据
-            df = self.fetch_daily_data(stock_code)
-            # 处理日线数据
-            df['market_type'] = df['stock_code'].apply(lambda x: x[:2])
-            df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:])
-            rows = self.mysql_manager.batch_insert_or_update('stock_history_date_price', df,
-                                                             ['stock_code', 'stock_date'])
-            if rows > 0:
-                print(f"股票 {stock_code} 插入数据库成功！")
-                bool = self.update_stock_record(df['stock_code'].iloc[0], 'update_stock_date', df['stock_date'].max())
-                if bool:
-                    self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date)
+            df = self.fetch_daily_data(daily_type, stock_code)
+            if not df.empty:
+                # 处理日线数据
+                df['market_type'] = df['stock_code'].apply(lambda x: x[:2])
+                df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:])
+                rows = self.mysql_manager.batch_insert_or_update(daily_type['update_table'], df,
+                                                                 ['stock_code', 'stock_date'])
+                if rows > 0:
+                    print(f"股票 {stock_code} 插入数据库成功！")
+                    self.update_stock_record(df['stock_code'].iloc[0], daily_type['update_column'],
+                                             df['stock_date'].max())
+                    self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, date_type)
+                else:
+                    self.logger.error(
+                        f"股票 {stock_code} 插入{daily_type['update_table']}失败,插入日期：{df['stock_date'].min()} → {df['stock_date'].max()}")
+                return df
             else:
-                self.logger.error(
-                    f"股票 {stock_code} 插入失败,插入日期：{df['stock_date'].min()} → {df['stock_date'].max()}")
-
-            return df
+                return None
         except Exception as e:
             print(f"股票 {stock_code} 处理失败: {e}")
 
-    def mark_stock_as_processed(self, stock_code, update_column, update_date):
+    def mark_stock_as_processed(self, stock_code, update_column, update_date, date_type):
         """标记股票为已处理"""
         query = f"UPDATE update_stock_record SET {update_column} = %s WHERE stock_code = %s"
         rows = self.mysql_manager.execute(query, (update_date, stock_code))
@@ -143,7 +176,7 @@ class BaostockFetcher:
                 stock_code = 'sz.' + stock_code
             else:
                 stock_code = 'sh.' + stock_code
-            self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date)
+            self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, date_type)
         else:
             print(f"股票 {stock_code} 处理失败!")
 
@@ -212,11 +245,12 @@ class BaostockFetcher:
             print(f"股票 {stock_code} 记录表更新成功!")
             return True
         else:
-            self.logger.error(f"股票 {stock_code} 记录表更新失败!")
+            self.logger.warning(f"股票 {stock_code} 记录表更新失败! 记录或已更新过！")
             return False
 
 
 if __name__ == '__main__':
     fetcher = BaostockFetcher()
-    fetcher.batch_process_stock_data()
+    fetcher.batch_process_stock_data('w')
+    fetcher.batch_process_stock_data('m')
     fetcher.close()

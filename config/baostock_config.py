@@ -11,7 +11,6 @@ def get_stock_daly_fields() -> Dict[str, Any]:
         'open': 'open_price',
         'high': 'high_price',
         'low': 'low_price',
-        'preclose':'pre_close',
         'close': 'close_price',
         'volume': 'trading_volume',
         'amount': 'trading_amount',
@@ -23,6 +22,38 @@ def get_stock_daly_fields() -> Dict[str, Any]:
         'psTTM': 'rolling_pts_ratio',
         'pcfNcfTTM': 'rolling_current_ratio',
         'isST': 'if_st'
+    }
+
+
+def get_stock_week_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'adjustflag': 'adjust_flag',
+        'turn': 'turn',
+        'pctChg': 'ups_and_downs'
+    }
+
+
+def get_stock_month_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'adjustflag': 'adjust_flag',
+        'turn': 'turn',
+        'pctChg': 'ups_and_downs'
     }
 
 
@@ -50,9 +81,17 @@ class BAOSTOCK_CONFIG(BaseConfig[Dict[str, Any]]):
         """获取Baostock完整配置（包含所有频率和字段）"""
         return {
             # K线字段配置
-            "stock_fields": self.get_str(
-                "stock_fields",
+            "date_stock_fields": self.get_str(
+                "date_stock_fields",
                 fallback="date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM,isST"
+            ),
+            "week_stock_fields": self.get_str(
+                "week_stock_fields",
+                fallback="date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg"
+            ),
+            "month_stock_fields": self.get_str(
+                "month_stock_fields",
+                fallback="date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg"
             ),
             # 频率配置（日/周/月）
             "day_frequency": self.get_str("day_frequency", fallback="d"),
