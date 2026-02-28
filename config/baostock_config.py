@@ -12,6 +12,7 @@ def get_stock_daly_fields() -> Dict[str, Any]:
         'high': 'high_price',
         'low': 'low_price',
         'close': 'close_price',
+        'preclose': 'pre_close',
         'volume': 'trading_volume',
         'amount': 'trading_amount',
         'adjustflag': 'adjust_flag',

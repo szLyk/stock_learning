@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from pymysql import IntegrityError
 
@@ -6,6 +7,8 @@ import pymysql
 from pymysql.cursors import DictCursor
 from typing import Optional, Dict, List, Tuple, Any, Union
 from contextlib import contextmanager
+
+from logs.logger import LogManager
 
 
 class MySQLUtil:
@@ -16,6 +19,7 @@ class MySQLUtil:
         self.config = get_mysql_config_instance().get_config()
         self.conn: Optional[pymysql.connections.Connection] = None  # 数据库连接对象
         self.cursor = None  # 游标对象
+        self.logger = LogManager.get_logger("mysql_util")
 
     def connect(self) -> None:
         """建立数据库连接，处理连接失败异常"""
@@ -62,7 +66,7 @@ class MySQLUtil:
             # 有异常时回滚事务
             if self.conn:
                 self.conn.rollback()
-            print(f"执行异常：{exc_val}")
+            self.logger.error(f"执行异常：{exc_val}")
         else:
             # 无异常时提交事务
             if self.conn:
@@ -163,6 +167,8 @@ class MySQLUtil:
         :param unique_keys: 唯一键列表（如['stock_code']），用于冲突时更新
         :return: 影响行数
         """
+        # 将nan值替换为None
+        df = df.replace(np.nan, None)
         # ========== 修复核心：正确判断DataFrame是否为空 ==========
         if df.empty:  # 替换原有的 if not data_list:
             print("DataFrame为空，无需入库")
@@ -206,11 +212,15 @@ class MySQLUtil:
             return total_rows
         except IntegrityError as e:
             self.conn.rollback()
-            print(f"数据冲突错误：{e}")
+            self.logger.error(f"数据冲突错误：{e}")
             return 0
         except Exception as e:
             self.conn.rollback()
-            print(f"批量入库失败：{e}")
+            if df is not None and 'stock_code' in df.columns:
+                stock_code = df['stock_code'].iloc[0] if not df.empty else 'UNKNOWN'
+                self.logger.error(f"{stock_code}: 批量入库失败：{e}")
+            else:
+                self.logger.error(f"批量入库失败：{e}")
             return 0
         finally:
             # 不要关闭连接，留给外部管理
