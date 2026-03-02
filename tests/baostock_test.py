@@ -3,7 +3,7 @@ from src.utils.Indicator_calculation_tool import IndicatorCalculator
 
 if __name__ == '__main__':
     fetcher = BaostockFetcher()
-    fetcher.batch_process_stock_data('kd', update_record_table='update_index_stock_record')
+    # fetcher.batch_process_stock_data('kd', update_record_table='update_index_stock_record')
     fetcher.batch_process_stock_data('kw', update_record_table='update_index_stock_record')
     fetcher.batch_process_stock_data('km', update_record_table='update_index_stock_record')
     fetcher.close()

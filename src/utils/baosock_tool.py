@@ -3,7 +3,6 @@ import time
 import baostock as bs
 import pandas as pd
 from datetime import datetime, timedelta
-
 from logs.logger import LogManager
 from src.utils.redis_tool import RedisUtil
 from src.utils.mysql_tool import MySQLUtil
@@ -542,6 +541,6 @@ if __name__ == '__main__':
     fetcher = BaostockFetcher()
     # codes = fetcher.get_pending_stocks(date_type='kd', update_record_table='update_index_stock_record')
     # print(codes)
-    df = fetcher.fetch_daily_data(fetcher.get_daily_type('km'), 'sh.000001')
-    print(df[df['stock_date'] == '2026-02-27'].to_string())
+    # df = fetcher.fetch_daily_data(fetcher.get_daily_type('km'), 'sh.000001')
+    # print(df[df['stock_date'] == '2026-02-27'].to_string())
     fetcher.close()
