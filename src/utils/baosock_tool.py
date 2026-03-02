@@ -39,7 +39,8 @@ class BaostockFetcher:
                 'date_files': 'week_stock_fields',
                 'update_table': 'stock_history_week_price',
                 'files': get_stock_week_fields(),
-                'frequency': 'week_frequency'
+                'frequency': 'week_frequency',
+                'update_record_table': 'update_stock_record'
             }
         if date_type == 'm':
             return {
@@ -47,15 +48,43 @@ class BaostockFetcher:
                 'date_files': 'month_stock_fields',
                 'update_table': 'stock_history_month_price',
                 'files': get_stock_month_fields(),
-                'frequency': 'month_frequency'
+                'frequency': 'month_frequency',
+                'update_record_table': 'update_stock_record'
             }
-
+        if date_type == 'km':
+            return {
+                'update_column': 'update_index_stock_month',
+                'date_files': 'month_index_stock_fields',
+                'update_table': 'index_stock_history_month_price',
+                'files': get_index_stock_month_fields(),
+                'frequency': 'month_frequency',
+                'update_record_table': 'update_index_stock_record'
+            }
+        if date_type == 'kw':
+            return {
+                'update_column': 'update_index_stock_week',
+                'date_files': 'week_index_stock_fields',
+                'update_table': 'index_stock_history_week_price',
+                'files': get_index_stock_week_fields(),
+                'frequency': 'week_frequency',
+                'update_record_table': 'update_index_stock_record'
+            }
+        if date_type == 'kd':
+            return {
+                'update_column': 'update_index_stock_date',
+                'date_files': 'date_index_stock_fields',
+                'update_table': 'index_stock_history_date_price',
+                'files': get_index_stock_date_fields(),
+                'frequency': 'day_frequency',
+                'update_record_table': 'update_index_stock_record'
+            }
         return {
             'update_column': 'update_stock_date',
             'date_files': 'date_stock_fields',
             'update_table': 'stock_history_date_price',
             'files': get_stock_daly_fields(),
-            'frequency': 'day_frequency'
+            'frequency': 'day_frequency',
+            'update_record_table': 'update_stock_record'
         }
 
     def fetch_daily_data(self, daily_type, stock_code, start_date=None, end_date=None):
@@ -63,7 +92,7 @@ class BaostockFetcher:
         code = stock_code[-6:]
         if not start_date:
             # 获取最后更新日期
-            query_sql = f"SELECt CAST({daily_type['update_column']} as CHAR) as {daily_type['update_column']} FROM update_stock_record WHERE stock_code = %s"
+            query_sql = f"SELECt CAST({daily_type['update_column']} as CHAR) as {daily_type['update_column']} FROM {daily_type['update_record_table']} WHERE stock_code = %s"
             last_update_date = self.mysql_manager.query_one(query_sql, code)
             last_update_date = last_update_date[daily_type['update_column']]
             if not last_update_date:
@@ -104,47 +133,48 @@ class BaostockFetcher:
             self.logger.warning(f"股票 {stock_code} 获取数据为空 请求日期为 {start_date} ~ {end_date}")
         return df
 
-    def batch_fetch_daily_data(self, stock_codes, date_type):
+    def batch_fetch_daily_data(self, stock_codes, date_type, update_record_table='update_stock_record'):
         """批量获取日线数据"""
         for stock_code in stock_codes:
             # 随机休眠3秒
             time.sleep(1)
-            df = self.process_stock(stock_code, date_type)
+            df = self.process_stock(stock_code, date_type, update_record_table)
             if not df.empty:
                 print(f"股票 {stock_code} 处理完成")
 
     # 批量处理股票数据
-    def batch_process_stock_data(self, date_type):
+    def batch_process_stock_data(self, date_type: str, update_record_table: str = 'update_stock_record'):
         # 更新股票信息
         self.update_stock_basic()
         # 获取待处理的股票代码
-        pending_stocks = self.get_pending_stocks(date_type)
+        pending_stocks = self.get_pending_stocks(date_type=date_type, update_record_table=update_record_table)
         # 批量处理股票数据
-        self.batch_fetch_daily_data(pending_stocks, date_type)
+        self.batch_fetch_daily_data(pending_stocks, date_type, update_record_table)
         # 初始化股票周月日期数据
         self.init_stock_date_week_month()
 
-    def get_pending_stocks(self, date_type, column_name='stock_code'):
+    def get_pending_stocks(self, date_type: str, column_name: str = 'stock_code',
+                           update_record_table: str = 'update_stock_record'):
         """从Redis中获取待处理的股票代码"""
         pending_stocks = self.redis_manager.get_unprocessed_stocks(self.now_date, date_type)
         if not pending_stocks:
             # 如果Redis中没有待处理的股票代码，从MySQL中获取
-            pending_stocks = self.get_pending_stocks_from_mysql()
+            pending_stocks = self.get_pending_stocks_from_mysql(update_record_table)
             self.redis_manager.add_unprocessed_stocks(pending_stocks[column_name].tolist(), self.now_date, date_type)
             # 把df转成列表
             pending_stocks = pending_stocks[column_name].tolist()
         return pending_stocks
 
-    def get_pending_stocks_from_mysql(self):
+    def get_pending_stocks_from_mysql(self, record_table='update_stock_record'):
         """从MySQL中获取待处理的股票代码"""
-        query = f"SELECT a.stock_code as stock,a.market_type FROM update_stock_record a join stock_basic b on a.stock_code = b.stock_code where b.stock_status = 1"
+        query = f"SELECT a.stock_code as stock,a.market_type FROM {record_table} a join stock_basic b on a.stock_code = b.stock_code where b.stock_status = 1"
         result = self.mysql_manager.query_all(query, ())
         df = pd.DataFrame(result)
         df['stock_code'] = df['market_type'] + '.' + df['stock']
         return df
 
     # 不开多线程爬取 防止封IP
-    def process_stock(self, stock_code, date_type='d'):
+    def process_stock(self, stock_code, date_type='d', update_record_table='update_stock_record'):
         # 获取字典
         daily_type = self.get_daily_type(date_type)
         """处理单只股票的数据"""
@@ -160,7 +190,7 @@ class BaostockFetcher:
                 if rows > 0:
                     print(f"股票 {stock_code} 插入数据库成功！")
                     self.update_stock_record(df['stock_code'].iloc[0], daily_type['update_column'],
-                                             df['stock_date'].max())
+                                             df['stock_date'].max(), update_record_table)
                     self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, date_type)
                 else:
                     self.logger.error(
@@ -239,14 +269,19 @@ class BaostockFetcher:
         # 创建 SQLAlchemy 引擎
         self.mysql_manager.batch_insert_or_update(table_name, df, ['stock_code'])
         # 过滤掉df中状态stock_type不为1的数据 建立一个新的数据集
-        record = df[df['stock_type'] == '1']
+        stock_record = df[df['stock_type'] == '1']
         self.mysql_manager.batch_insert_or_update('update_stock_record',
-                                                  record[['stock_code', 'stock_name', 'market_type']],
+                                                  stock_record[['stock_code', 'stock_name', 'market_type']],
+                                                  ['stock_code'])
+        stock_record = df[df['stock_type'].isin(['2', '5'])]
+        self.mysql_manager.batch_insert_or_update('update_index_stock_record',
+                                                  stock_record[
+                                                      ['stock_code', 'stock_name', 'market_type', 'stock_type']],
                                                   ['stock_code'])
         return df
 
-    def update_stock_record(self, stock_code, update_column, update_date):
-        sql = f"UPDATE update_stock_record SET {update_column} = %s WHERE stock_code = %s"
+    def update_stock_record(self, stock_code, update_column, update_date, update_record_table='update_stock_record'):
+        sql = f"UPDATE {update_record_table} SET {update_column} = %s WHERE stock_code = %s"
         rows = self.mysql_manager.execute(sql, (update_date, stock_code))
         if rows > 0:
             print(f"股票 {stock_code} 记录表更新成功!")
@@ -505,9 +540,8 @@ class BaostockFetcher:
 
 if __name__ == '__main__':
     fetcher = BaostockFetcher()
-    fetcher.batch_process_stock_data('d')
-    fetcher.batch_process_stock_data('w')
-    # fetcher.batch_process_stock_data('m')
-    # fetcher.calculate_stock_month_price()
-    # fetcher.calculate_stock_week_price()
+    # codes = fetcher.get_pending_stocks(date_type='kd', update_record_table='update_index_stock_record')
+    # print(codes)
+    df = fetcher.fetch_daily_data(fetcher.get_daily_type('km'), 'sh.000001')
+    print(df[df['stock_date'] == '2026-02-27'].to_string())
     fetcher.close()

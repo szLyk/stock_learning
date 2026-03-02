@@ -48,7 +48,7 @@ CREATE TABLE `date_stock_macd` (
   PRIMARY KEY (`stock_code`,`stock_date`) USING BTREE,
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线MACD表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线MACD表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.date_stock_moving_average_table;
 CREATE TABLE `date_stock_moving_average_table` (
@@ -75,7 +75,7 @@ CREATE TABLE `date_stock_moving_average_table` (
   PRIMARY KEY (`stock_code`,`stock_date`),
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线均线表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线均线表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.month_stock_macd;
 CREATE TABLE `month_stock_macd` (
@@ -92,7 +92,7 @@ CREATE TABLE `month_stock_macd` (
   PRIMARY KEY (`stock_code`,`stock_date`),
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线MACD表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线MACD表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.month_stock_moving_average_table;
 CREATE TABLE `month_stock_moving_average_table` (
@@ -119,7 +119,7 @@ CREATE TABLE `month_stock_moving_average_table` (
   PRIMARY KEY (`stock_code`,`stock_date`) USING BTREE,
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票月线均线表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票月线均线表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.stock_basic;
 CREATE TABLE `stock_basic` (
@@ -237,7 +237,7 @@ CREATE TABLE `stock_history_date_price` (
   UNIQUE KEY `index_stock_date_price` (`stock_code`,`stock_date`) USING BTREE,
   KEY `index_tradestatus` (`tradestatus`) USING BTREE,
   KEY `index_stock_date` (`stock_date`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=35840536 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线价格表（后复权）';
+) ENGINE=InnoDB AUTO_INCREMENT=35840536 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票日线价格表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.stock_history_month_price;
 CREATE TABLE `stock_history_month_price` (
@@ -258,7 +258,7 @@ CREATE TABLE `stock_history_month_price` (
   `market_type` varchar(10) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `index_stock_date_price` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB AUTO_INCREMENT=1708958 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票月线价格表（后复权）';
+) ENGINE=InnoDB AUTO_INCREMENT=1708958 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票月线价格表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.stock_month_boll;
 CREATE TABLE `stock_month_boll` (
@@ -391,7 +391,7 @@ CREATE TABLE `week_stock_macd` (
   PRIMARY KEY (`stock_code`,`stock_date`),
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线MACD表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线MACD表（前复权）';
 
 -- DROP TABLE IF EXISTS stock.week_stock_moving_average_table;
 CREATE TABLE `week_stock_moving_average_table` (
@@ -418,4 +418,86 @@ CREATE TABLE `week_stock_moving_average_table` (
   PRIMARY KEY (`stock_code`,`stock_date`) USING BTREE,
   KEY `index_stock_date` (`stock_date`) USING BTREE,
   KEY `un_index_stock_code_and_date` (`stock_code`,`stock_date`) USING BTREE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线均线表（后复权）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='股票周线均线表（前复权）';
+
+-- drop table IF EXISTS index_stock_history_date_price;
+CREATE TABLE IF NOT EXISTS `index_stock_history_date_price` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `stock_code` varchar(20) NOT NULL COMMENT '证券代码',
+  `stock_date` date NOT NULL COMMENT '交易所行情日期',
+  `open_price` decimal(10,4) DEFAULT NULL COMMENT '开盘价',
+  `high_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `pre_close` decimal(10,4) DEFAULT NULL COMMENT '前收盘价',
+  `low_price` decimal(10,4) DEFAULT NULL COMMENT '最低价',
+  `close_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `trading_volume` decimal(20,4) DEFAULT NULL COMMENT '成交量（累计 单位：股）',
+  `trading_amount` decimal(20,4) DEFAULT NULL COMMENT '成交额（单位：人民币元）',
+  `ups_and_downs` decimal(10,4) DEFAULT NULL COMMENT '涨跌幅（百分比）',
+  `market_type` varchar(5) NOT NULL COMMENT '证券市场 sz|sh',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `index_stock_date_price` (`stock_code`,`stock_date`) USING BTREE,
+  KEY `index_market_type` (`stock_code`,`market_type`) USING BTREE,
+  KEY `index_stock_date` (`stock_date`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='指数数据表';
+
+-- drop table IF EXISTS index_stock_history_week_price;
+CREATE TABLE IF NOT EXISTS `index_stock_history_week_price` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `stock_code` varchar(20) NOT NULL COMMENT '证券代码',
+  `stock_date` date NOT NULL COMMENT '交易所行情日期',
+  `open_price` decimal(10,4) DEFAULT NULL COMMENT '开盘价',
+  `high_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `low_price` decimal(10,4) DEFAULT NULL COMMENT '最低价',
+  `close_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `trading_volume` decimal(20,4) DEFAULT NULL COMMENT '成交量（累计 单位：股）',
+  `trading_amount` decimal(20,4) DEFAULT NULL COMMENT '成交额（单位：人民币元）',
+  `ups_and_downs` decimal(10,4) DEFAULT NULL COMMENT '涨跌幅（百分比）',
+  `market_type` varchar(5) NOT NULL COMMENT '证券市场 sz|sh',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `index_stock_date_price` (`stock_code`,`stock_date`) USING BTREE,
+  KEY `index_market_type` (`stock_code`,`market_type`) USING BTREE,
+  KEY `index_stock_date` (`stock_date`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='指数数据表';
+
+-- drop table IF EXISTS index_stock_history_month_price;
+CREATE TABLE IF NOT EXISTS `index_stock_history_month_price` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `stock_code` varchar(20) NOT NULL COMMENT '证券代码',
+  `stock_date` date NOT NULL COMMENT '交易所行情日期',
+  `open_price` decimal(10,4) DEFAULT NULL COMMENT '开盘价',
+  `high_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `low_price` decimal(10,4) DEFAULT NULL COMMENT '最低价',
+  `close_price` decimal(10,4) DEFAULT NULL COMMENT '收盘价',
+  `trading_volume` decimal(20,4) DEFAULT NULL COMMENT '成交量（累计 单位：股）',
+  `trading_amount` decimal(20,4) DEFAULT NULL COMMENT '成交额（单位：人民币元）',
+  `ups_and_downs` decimal(10,4) DEFAULT NULL COMMENT '涨跌幅（百分比）',
+  `market_type` varchar(5) NOT NULL COMMENT '证券市场 sz|sh',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `index_stock_date_price` (`stock_code`,`stock_date`) USING BTREE,
+  KEY `index_market_type` (`stock_code`,`market_type`) USING BTREE,
+  KEY `index_stock_date` (`stock_date`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='指数数据表';
+
+
+-- drop table IF EXISTS update_index_stock_record;
+CREATE TABLE IF NOT EXISTS `update_index_stock_record` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `stock_name` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT NULL COMMENT '股票名称',
+  `stock_code` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL COMMENT '股票代码',
+  `create_time` datetime DEFAULT CURRENT_TIMESTAMP,
+  `update_time` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `update_index_stock_date` date DEFAULT '1990-01-01' COMMENT '日线更新记录',
+  `update_index_stock_week` date DEFAULT '1990-01-01' COMMENT '周线更新记录',
+  `update_index_stock_month` date DEFAULT '1990-01-01' COMMENT '月线更新记录',
+	`stock_type` tinyint DEFAULT NULL COMMENT '证券类型，其中1：股票，2：指数，3：其它，4：可转债，5：ETF',
+  `market_type` varchar(10) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `u_index_stock_code` (`stock_code`) USING BTREE,
+  KEY `index_stock_name` (`stock_name`) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='指数更新记录表';

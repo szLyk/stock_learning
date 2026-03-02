@@ -58,6 +58,49 @@ def get_stock_month_fields() -> Dict[str, Any]:
     }
 
 
+def get_index_stock_date_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'preclose': 'pre_close',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'pctChg': 'ups_and_downs'
+    }
+
+
+def get_index_stock_week_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'pctChg': 'ups_and_downs'
+    }
+
+
+def get_index_stock_month_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'pctChg': 'ups_and_downs'
+    }
+
+
 # updateDate	code	code_name	industry	industryClassification
 def get_stock_industry_fields() -> Dict[str, Any]:
     return {
@@ -93,6 +136,18 @@ class BAOSTOCK_CONFIG(BaseConfig[Dict[str, Any]]):
             "month_stock_fields": self.get_str(
                 "month_stock_fields",
                 fallback="date,code,open,high,low,close,volume,amount,adjustflag,turn,pctChg"
+            ),
+            "date_index_stock_fields": self.get_str(
+                "date_index_stock_fields",
+                fallback="date,code,open,high,low,close,preclose,volume,amount,pctChg"
+            ),
+            "week_index_stock_fields": self.get_str(
+                "week_index_stock_fields",
+                fallback="date,code,open,high,low,close,volume,amount,pctChg"
+            ),
+            "month_index_stock_fields": self.get_str(
+                "month_index_stock_fields",
+                fallback="date,code,open,high,low,close,volume,amount,pctChg"
             ),
             # 频率配置（日/周/月）
             "day_frequency": self.get_str("day_frequency", fallback="d"),
