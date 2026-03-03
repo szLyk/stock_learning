@@ -174,3 +174,29 @@ class INDICATOR_CONFIG:
             'frequency': 14,
             'update_record_table': 'update_stock_record'
         }
+
+    def get_adx_type(self, date_type='d'):
+        if date_type == 'w':
+            return {
+                'update_column': 'update_stock_week_adx',
+                'data_table': 'stock_history_week_price',
+                'update_table': 'stock_week_adx',
+                'update_record_table': 'update_stock_record',
+                'tradestatus': ' ',
+            }
+        if date_type == 'm':
+            return {
+                'update_column': 'update_stock_month_adx',
+                'data_table': 'stock_history_month_price',
+                'update_table': 'stock_month_adx',
+                'update_record_table': 'update_stock_record',
+                'tradestatus': ' ',
+            }
+
+        return {
+            'update_column': 'update_stock_date_adx',
+            'data_table': 'stock_history_date_price',
+            'update_table': 'stock_date_adx',
+            'update_record_table': 'update_stock_record',
+            'tradestatus': ' AND tradestatus = 1 ',
+        }

@@ -9,5 +9,5 @@ if __name__ == '__main__':
     # fetcher.batch_process_stock_data_all_time_period()
     # fetcher.close()
     indicator_calculator = IndicatorCalculator()
-    indicator_calculator.run_batch_adx_all_time_period()
+    indicator_calculator.run_batch_obv_all_time_period()
     indicator_calculator.close()

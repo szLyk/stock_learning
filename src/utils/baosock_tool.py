@@ -15,7 +15,6 @@ class BaostockFetcher:
     def __init__(self):
         self.login()
         self.redis_manager = RedisUtil()
-        self.redis_manager.connect()
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
         self.bs_config = BAOSTOCK_CONFIG().get_config()
@@ -77,6 +76,15 @@ class BaostockFetcher:
                 'frequency': 'day_frequency',
                 'update_record_table': 'update_index_stock_record'
             }
+        if date_type == 'min':
+            return {
+                'update_column': 'update_stock_min',
+                'date_files': 'min_stock_fields',
+                'update_table': 'stock_history_min_price',
+                'files': get_stock_min_fields(),
+                'frequency': 'min_frequency',
+                'update_record_table': 'update_stock_record'
+            }
         return {
             'update_column': 'update_stock_date',
             'date_files': 'date_stock_fields',
@@ -86,7 +94,7 @@ class BaostockFetcher:
             'update_record_table': 'update_stock_record'
         }
 
-    def fetch_daily_data(self, daily_type, stock_code, start_date=None, end_date=None):
+    def fetch_daily_data(self, daily_type: dict, stock_code, start_date=None, end_date=None):
         """获取日线数据，支持断点续传"""
         code = stock_code[-6:]
         if not start_date:
@@ -94,10 +102,13 @@ class BaostockFetcher:
             query_sql = f"SELECt CAST({daily_type['update_column']} as CHAR) as {daily_type['update_column']} FROM {daily_type['update_record_table']} WHERE stock_code = %s"
             last_update_date = self.mysql_manager.query_one(query_sql, code)
             last_update_date = last_update_date[daily_type['update_column']]
-            if not last_update_date:
-                start_date = '1990-01-01'
+            if daily_type['date_files'] == 'min_stock_fields':
+                start_date = get_last_some_time(30)
             else:
-                start_date = last_update_date
+                if not last_update_date:
+                    start_date = '1990-01-01'
+                else:
+                    start_date = last_update_date
 
         # 如果没有指定结束日期，使用当前日期作为结束日期
         if not end_date:
@@ -145,6 +156,7 @@ class BaostockFetcher:
     def batch_process_stock_data(self, date_type: str, update_record_table: str = 'update_stock_record'):
         # 更新股票信息
         self.update_stock_basic()
+        self.update_stock_industry()
         # 获取待处理的股票代码
         pending_stocks = self.get_pending_stocks(date_type=date_type, update_record_table=update_record_table)
         # 批量处理股票数据
@@ -337,7 +349,7 @@ class BaostockFetcher:
                 c.close_price,
                 a.trading_volume,
                 a.trading_amount,
-                3 AS adjust_flag,
+                2 AS adjust_flag,
                 a.turn,
                 ROUND(((c.close_price - b.last_close_price)/b.last_close_price) * 100, 4) ups_and_downs,
                 d.market_type
@@ -415,7 +427,8 @@ class BaostockFetcher:
             raise
 
     # 计算当前未完整周的收、开盘价以及涨跌幅度
-    def calculate_stock_week_price(self):
+    def calculate_stock_week_price(self, date_table='stock_history_date_price',
+                                   week_table='stock_history_week_price'):
         """
         计算股票周线价格
         """
@@ -430,14 +443,14 @@ class BaostockFetcher:
             self.logger.info(f"开始计算股票周线价格，时间范围：{first_trade_week} ~ {last_trade_week}")
 
             # 2. 修复核心：SQL中的%替换为%%（转义），日期参数用%s占位（防注入）
-            calculate_sql = '''
+            calculate_sql = f'''
                 with week_open_price as (
                 SELECT  a.stock_code,a.open_price,a.close_price,
                 c.close_price last_close_price
-                from stock.stock_history_date_price a
+                from stock.{date_table} a
                 join (
                 SELECT min(stock_date) stock_date,stock_code
-                from stock.stock_history_date_price
+                from stock.{date_table}
                 where  date_format(stock_date,'%%Y-%%m-%%d') >= %s
                 and date_format(stock_date,'%%Y-%%m-%%d') <= %s
                 GROUP BY stock_code
@@ -445,16 +458,16 @@ class BaostockFetcher:
                 and a.stock_code = b.stock_code
                 join (
                 SELECT close_price,stock_code
-                from stock.stock_history_week_price
+                from stock.{week_table}
                 where date_format(stock_date,'%%Y-%%m-%%d') = %s
                 ) c on a.stock_code = c.stock_code
                 ),
                 week_close_price as (
                 SELECT a.stock_code,a.close_price,a.stock_date
-                from stock.stock_history_date_price a
+                from stock.{date_table} a
                 join (
                 SELECT max(stock_date) stock_date,stock_code
-                from stock.stock_history_date_price
+                from stock.{date_table}
                 where date_format(stock_date,'%%Y-%%m-%%d') >= %s
                 and date_format(stock_date,'%%Y-%%m-%%d') <= %s
                 GROUP BY stock_code
@@ -462,13 +475,13 @@ class BaostockFetcher:
                 and a.stock_code = b.stock_code)
                 select a.stock_code,c.stock_date,b.open_price,a.high_price,a.low_price,
                     c.close_price,a.trading_volume,a.trading_amount,
-                    3 as adjust_flag,turn,round(((c.close_price - last_close_price)/last_close_price) * 100,4) ups_and_downs,
+                    2 as adjust_flag,turn,round(((c.close_price - last_close_price)/last_close_price) * 100,4) ups_and_downs,
                     d.market_type
                 from
                 (SELECT stock_code,sum(trading_volume) trading_volume ,
                 sum(trading_amount)trading_amount,min(low_price)low_price,
                 max(high_price) high_price,sum(turn) turn
-                from stock.stock_history_date_price
+                from stock.{date_table}
                 where date_format(stock_date,'%%Y-%%m-%%d') >= %s
                 and date_format(stock_date,'%%Y-%%m-%%d') <= %s
                 GROUP BY stock_code) a join
@@ -510,7 +523,7 @@ class BaostockFetcher:
 
     # 获取所有不同日期的股票类型
     def batch_process_stock_data_all_time_period(self):
-        for time_period in ['d', 'w', 'm']:
+        for time_period in ['d', 'w', 'm', 'kd']:
             if time_period == 'd':
                 self.batch_process_stock_data(time_period)
             elif time_period == 'w':
@@ -518,6 +531,10 @@ class BaostockFetcher:
                     self.batch_process_stock_data(time_period)
                 else:
                     self.calculate_stock_week_price()
+            elif time_period == 'kd':
+                fetcher.batch_process_stock_data(date_type='kd', update_record_table='update_index_stock_record')
+                fetcher.calculate_index_stock_week_price()
+                fetcher.calculate_index_stock_month_price()
             else:
                 if time_tool.is_last_day_of_month(time_tool.get_last_some_time(0)):
                     self.batch_process_stock_data(time_period)
@@ -536,11 +553,267 @@ class BaostockFetcher:
         if len(df) > 0:
             self.mysql_manager.batch_insert_or_update('stock_date_week_month', df, 'stock_date')
 
+    def calculate_index_stock_week_price(self):
+        """
+        计算股票周线价格
+        """
+        try:
+            # 1. 修复核心：SQL中的%替换为%%（转义），日期参数用%s占位（防注入）
+            calculate_sql = f'''
+                WITH weekly_data AS (
+                    SELECT
+                        a.stock_code,
+                        a.market_type,
+                        b.stock_week_date,
+                        a.stock_date,
+                        a.open_price,
+                        a.high_price,
+                        a.low_price,
+                        a.close_price,
+                        a.trading_volume,
+                        a.trading_amount,
+                        a.ups_and_downs,
+                        c.stock_type
+                    FROM
+                        index_stock_history_date_price a
+                    JOIN
+                        stock_date_week_month b ON a.stock_date = b.stock_date
+                    JOIN 
+                        stock_basic c ON c.stock_code = a.stock_code and c.market_type = a.market_type
+                ),
+                weekly_agg AS (
+                    SELECT
+                        stock_code,
+                        stock_week_date,
+                        market_type,
+                                stock_type,
+                        MAX(high_price) AS high_price,
+                        MIN(low_price) AS low_price,
+                        SUM(trading_volume) AS trading_volume,
+                        SUM(trading_amount) AS trading_amount
+                    FROM
+                        weekly_data
+                    GROUP BY
+                        stock_code,
+                        stock_week_date,
+                        market_type,
+                                stock_type
+                ),
+                weekly_open_close AS (
+                    SELECT
+                        stock_code,
+                        stock_week_date,
+                        market_type,
+                        FIRST_VALUE(open_price) OVER (
+                            PARTITION BY stock_code, stock_week_date
+                            ORDER BY stock_date
+                        ) AS open_price,
+                        LAST_VALUE(close_price) OVER (
+                            PARTITION BY stock_code, stock_week_date
+                            ORDER BY stock_date
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                        ) AS close_price
+                    FROM
+                        weekly_data
+                )
+                SELECT
+                    a.stock_code,
+                    a.stock_week_date AS stock_date,
+                    b.open_price,
+                    a.high_price,
+                    a.low_price,
+                    b.close_price,
+                    a.trading_volume,
+                    a.trading_amount,
+                    CASE
+                        WHEN LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_week_date
+                        ) IS NULL THEN ((b.close_price - b.open_price) / b.open_price) * 100
+                        ELSE (b.close_price - LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_week_date
+                        )) / LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_week_date
+                        ) * 100
+                    END AS ups_and_downs,
+                    a.market_type,
+                    a.stock_type
+                FROM
+                    weekly_agg a
+                JOIN
+                    weekly_open_close b ON a.stock_code = b.stock_code AND a.stock_week_date = b.stock_week_date AND a.market_type = b.market_type
+                GROUP BY
+                    a.stock_code,
+                    a.stock_week_date,
+                    a.market_type,
+                    b.open_price,
+                    a.high_price,
+                    a.low_price,
+                    b.close_price,
+                    a.trading_volume,
+                    a.trading_amount
+                ORDER BY
+                    a.stock_week_date;
+            '''
+
+            # 4. 执行查询（传入参数，避免SQL注入）
+            result = self.mysql_manager.query_all(calculate_sql, ())
+            # 5. 结果处理
+            if not result:
+                self.logger.warning("未查询到周线价格计算数据")
+                return
+
+            df = pd.DataFrame(result)
+            self.logger.info(f"周线价格计算完成，共获取 {len(df)} 条数据")
+
+        except Exception as e:
+            self.logger.error("计算股票周线价格失败", exc_info=True)
+            raise  # 可选：抛出异常让上层处理
+        if len(df) == 0:
+            return
+        update_df = df[['stock_code', 'stock_date', 'stock_type', 'market_type']].rename(
+            columns={'stock_code': 'stock_code', 'stock_date': 'update_index_stock_week'})
+
+        cnt = self.mysql_manager.batch_insert_or_update('index_stock_history_week_price',
+                                                        df.drop(columns=['stock_type']),
+                                                        ['stock_code', 'stock_date'])
+        if cnt > 0:
+            self.mysql_manager.batch_insert_or_update('update_index_stock_record', update_df, ['stock_code'])
+
+    def calculate_index_stock_month_price(self):
+        """
+        计算股票月线价格
+        """
+        try:
+            # 1. 修复核心：SQL中的%替换为%%（转义），日期参数用%s占位（防注入）
+            calculate_sql = f'''
+                WITH monthly_data AS (
+                    SELECT
+                        a.stock_code,
+                        a.market_type,
+                        b.stock_month_date,
+                        a.stock_date,
+                        a.open_price,
+                        a.high_price,
+                        a.low_price,
+                        a.close_price,
+                        a.trading_volume,
+                        a.trading_amount,
+                        a.ups_and_downs,
+                        c.stock_type
+                    FROM
+                        index_stock_history_date_price a
+                    JOIN
+                        stock_date_week_month b ON a.stock_date = b.stock_date
+                    JOIN
+                        stock_basic c ON c.stock_code = a.stock_code and c.market_type = a.market_type
+                ),
+                monthly_agg AS (
+                    SELECT
+                        stock_code,
+                        stock_month_date,
+                        market_type,
+                                stock_type,
+                        MAX(high_price) AS high_price,
+                        MIN(low_price) AS low_price,
+                        SUM(trading_volume) AS trading_volume,
+                        SUM(trading_amount) AS trading_amount
+                    FROM
+                        monthly_data
+                    GROUP BY
+                        stock_code,
+                        stock_month_date,
+                        market_type,
+                                stock_type
+                ),
+                monthly_open_close AS (
+                    SELECT
+                        stock_code,
+                        stock_month_date,
+                        market_type,
+                        FIRST_VALUE(open_price) OVER (
+                            PARTITION BY stock_code, stock_month_date
+                            ORDER BY stock_date
+                        ) AS open_price,
+                        LAST_VALUE(close_price) OVER (
+                            PARTITION BY stock_code, stock_month_date
+                            ORDER BY stock_date
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+                        ) AS close_price
+                    FROM
+                        monthly_data
+                )
+                SELECT
+                    a.stock_code,
+                    a.stock_month_date AS stock_date,
+                    b.open_price,
+                    a.high_price,
+                    a.low_price,
+                    b.close_price,
+                    a.trading_volume,
+                    a.trading_amount,
+                    CASE
+                        WHEN LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_month_date
+                        ) IS NULL THEN ((b.close_price - b.open_price) / b.open_price) * 100
+                        ELSE (b.close_price - LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_month_date
+                        )) / LAG(b.close_price) OVER (
+                            PARTITION BY a.stock_code
+                            ORDER BY a.stock_month_date
+                        ) * 100
+                    END AS ups_and_downs,
+                    a.market_type,
+                    a.stock_type
+                FROM
+                    monthly_agg a
+                JOIN
+                    monthly_open_close b ON a.stock_code = b.stock_code AND a.stock_month_date = b.stock_month_date AND a.market_type = b.market_type
+                GROUP BY
+                    a.stock_code,
+                    a.stock_month_date,
+                    a.market_type,
+                    b.open_price,
+                    a.high_price,
+                    a.low_price,
+                    b.close_price,
+                    a.trading_volume,
+                    a.trading_amount
+                ORDER BY
+                    a.stock_month_date;
+            '''
+
+            # 4. 执行查询（传入参数，避免SQL注入）
+            result = self.mysql_manager.query_all(calculate_sql, ())
+            # 5. 结果处理
+            if not result:
+                self.logger.warning("未查询到周线价格计算数据")
+                return
+
+            df = pd.DataFrame(result)
+            self.logger.info(f"周线价格计算完成，共获取 {len(df)} 条数据")
+
+        except Exception as e:
+            self.logger.error("计算股票周线价格失败", exc_info=True)
+            raise  # 可选：抛出异常让上层处理
+        if len(df) == 0:
+            return
+        update_df = df[['stock_code', 'stock_date', 'stock_type', 'market_type']].rename(
+            columns={'stock_code': 'stock_code', 'stock_date': 'update_index_stock_month'})
+
+        cnt = self.mysql_manager.batch_insert_or_update('index_stock_history_month_price',
+                                                        df.drop(columns=['stock_type']),
+                                                        ['stock_code', 'stock_date'])
+        if cnt > 0:
+            self.mysql_manager.batch_insert_or_update('update_index_stock_record', update_df, ['stock_code'])
+
 
 if __name__ == '__main__':
     fetcher = BaostockFetcher()
-    # codes = fetcher.get_pending_stocks(date_type='kd', update_record_table='update_index_stock_record')
-    # print(codes)
-    # df = fetcher.fetch_daily_data(fetcher.get_daily_type('km'), 'sh.000001')
-    # print(df[df['stock_date'] == '2026-02-27'].to_string())
+    df = fetcher.process_stock(stock_code='sz.002080', date_type='min')
+    print(df.to_string())
     fetcher.close()

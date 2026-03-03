@@ -5,30 +5,30 @@ from config.redis_config import get_redis_config
 
 
 class RedisUtil:
-    """Redis工具类（补充username参数，兼容高低版本）"""
+    """Redis 工具类（使用连接池，线程安全，避免端口耗尽）"""
+
+    # 类变量：全局唯一的连接池（单例）
+    _connection_pool: Optional[redis.ConnectionPool] = None
 
     def __init__(self):
-        self.config = get_redis_config()
-        self.client: Optional[redis.Redis] = None
-
-    def connect(self):
-        """建立Redis连接（新增username参数）"""
-        try:
-            self.client = redis.Redis(
-                host=self.config["host"],
-                port=self.config["port"],
-                username=self.config["username"],
-                password=self.config["password"],
-                db=self.config["db"],
-                max_connections=self.config["max_connections"],
-                socket_timeout=self.config["socket_timeout"],
-                decode_responses=self.config["decode_responses"]
+        # 只初始化一次连接池
+        if RedisUtil._connection_pool is None:
+            config = get_redis_config()
+            RedisUtil._connection_pool = redis.ConnectionPool(
+                host=config["host"],
+                port=config["port"],
+                username=config.get("username"),  # 可选参数
+                password=config.get("password"),
+                db=config["db"],
+                max_connections=config.get("max_connections", 20),
+                socket_timeout=config.get("socket_timeout", 5),
+                socket_connect_timeout=5,
+                retry_on_timeout=True,
+                decode_responses=config.get("decode_responses", True),  # 直接返回 str 而非 bytes
+                health_check_interval=30  # 定期检查连接健康
             )
-            # 测试连接
-            self.client.ping()
-            print("Redis连接成功！")
-        except Exception as e:
-            raise RuntimeError(f"Redis连接失败：{str(e)}")
+        # 创建 Redis 客户端（轻量级，复用连接池）
+        self.client: redis.Redis = redis.Redis(connection_pool=RedisUtil._connection_pool)
 
     def add_unprocessed_stocks(self, stock_list: List[str], date=datetime.now().strftime("%Y-%m-%d"), date_type='d'):
         """批量添加未处理的股票代码"""

@@ -20,7 +20,6 @@ import talib
 class IndicatorCalculator:
     def __init__(self):
         self.redis_manager = RedisUtil()
-        self.redis_manager.connect()
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
         self.ma_windows = [3, 5, 6, 7, 9, 10, 12, 20, 24, 26, 30, 60, 70, 125, 250]
@@ -490,7 +489,7 @@ class IndicatorCalculator:
             self.logger.error(f"MACD计算失败 [股票: {stock_code}]: {str(e)}", exc_info=True)
             return 0
 
-    def process_single_stock_macd_by_ta_lib(self, stock_code: str, daily_type: dict) -> int:
+    def process_single_stock_macd_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
         """
         使用 TA-Lib 计算单只股票的 MACD（12,26,9），支持增量更新与线程安全
         """
@@ -552,10 +551,12 @@ class IndicatorCalculator:
             df['macd'] = hist * 2  # MACD 柱 = (DIF - DEA) * 2
 
             # 5. 清理 NaN（前 ~33 天无效）
-            final_df = df[['stock_code', 'stock_date', 'diff', 'dea', 'macd']].copy()
+            final_df = df[['stock_code', 'stock_date', 'close_price','diff', 'dea', 'macd']].copy()
             final_df = final_df.dropna(subset=['macd']).reset_index(drop=True)
 
             if final_df.empty:
+                self.logger.info(f"股票 {stock_code} 数据无效，跳过MACD计算")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 return 0
 
             # # 6. 只入库新数据（stock_date > last_date）
@@ -573,7 +574,7 @@ class IndicatorCalculator:
             def _do_insert():
                 return self.mysql_manager.batch_insert_or_update(
                     table_name=update_table,
-                    df=final_df[['stock_code', 'stock_date', 'diff', 'dea', 'macd']],
+                    df=final_df[['stock_code', 'stock_date','close_price', 'diff', 'dea', 'macd']],
                     unique_keys=['stock_code', 'stock_date']
                 )
 
@@ -601,7 +602,7 @@ class IndicatorCalculator:
             self.logger.error(f"❌ 股票 {stock_code} MACD(TA-Lib) 计算失败: {e}", exc_info=True)
             return 0
 
-    def run_batch_macd_multithread(self, max_workers: int = 4, date_type='d', max_auto_retries=10):
+    def run_batch_macd_multithread(self, max_workers: int = 8, date_type='d', max_auto_retries=10):
         """
         多线程批量计算MACD（支持自动重试直到 Redis 清空）
         :param max_workers: 线程数
@@ -638,7 +639,16 @@ class IndicatorCalculator:
                 processor = None
                 try:
                     processor = IndicatorCalculator()
-                    rows = processor.process_single_stock_macd_by_ta_lib(stock_code, daily_type)
+                    # macd 最小計算窗口 30
+                    sql = f"SELECT COUNT(*) AS cnt FROM stock.{daily_type['data_table']} WHERE stock_code = %s"
+                    result = processor.mysql_manager.query_one(sql, (stock_code,))
+                    cnt = result['cnt'] if result else 0
+
+                    if cnt < 30:  # ✅ RSI最小窗口=6天
+                        processor.logger.info(f"股票 {stock_code} 交易日不足30天（{cnt}天），无法计算MACD，跳过")
+                        processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+                        return
+                    rows = processor.process_single_stock_macd_by_ta_lib(stock_code, daily_type, redis_key)
                     if rows > 0:
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 except Exception as e:
@@ -791,7 +801,7 @@ class IndicatorCalculator:
             self.logger.error(f"❌ 处理股票 {stock_code} BOLL失败: {e}", exc_info=True)
             return 0
 
-    def process_single_stock_boll_by_ta_lib(self, stock_code: str, daily_type: dict) -> int:
+    def process_single_stock_boll_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
         """
         使用 TA-Lib 计算单只股票的布林带 BOLL（20日, 2倍标准差），支持增量更新
         """
@@ -860,19 +870,20 @@ class IndicatorCalculator:
             final_df = final_df.dropna(subset=['upper_rail']).reset_index(drop=True)
 
             if final_df.empty:
+                self.logger.info(f"股票 {stock_code} 计算BOLL数据无效")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 return 0
 
             # 6. 只入库新数据（stock_date > last_date）
             if last_result:
                 last_dt = pd.to_datetime(last_date)
-                final_df = final_df[final_df['stock_date'] > last_dt]
+                final_df = final_df[final_df['stock_date'] >= last_dt]
 
             if final_df.empty:
                 return 0
 
             # 替换 NaN 为 None（兼容 MySQL）
             final_df = final_df.replace({np.nan: None})
-            print(final_df)
 
             # 7. 入库
             def _do_insert():
@@ -954,7 +965,7 @@ class IndicatorCalculator:
                             self.logger.info(f"股票 {stock_code} 交易日不满20天 无法计算布林线，跳过")
                             processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                             return
-                    rows = processor.process_single_stock_boll_by_ta_lib(stock_code, daily_type)
+                    rows = processor.process_single_stock_boll_by_ta_lib(stock_code, daily_type, redis_key)
                     if rows > 0:
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 except Exception as e:
@@ -1087,7 +1098,7 @@ class IndicatorCalculator:
             self.logger.error(f"❌ 处理股票 {stock_code} OBV 失败: {e}", exc_info=True)
             return 0
 
-    def process_single_stock_obv_by_ta_lib(self, stock_code: str, daily_type: dict) -> int:
+    def process_single_stock_obv_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
         """
         使用 TA-Lib 计算单只股票的 OBV 与 30日 MAOBV（支持增量更新 + 线程安全）
         """
@@ -1140,6 +1151,8 @@ class IndicatorCalculator:
             final_df = final_df[final_df['30ma_obv'].notna()].reset_index(drop=True)
 
             if final_df.empty:
+                self.logger.info(f"股票 {stock_code} 计算OBV无效")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 return 0
 
             # 替换 NaN 为 None（兼容 MySQL）
@@ -1230,7 +1243,7 @@ class IndicatorCalculator:
                         return
 
                     # ✅ 执行OBV计算（使用标准逻辑）
-                    rows = processor.process_single_stock_obv_by_ta_lib(stock_code, daily_type)
+                    rows = processor.process_single_stock_obv_by_ta_lib(stock_code, daily_type, redis_key)
                     if rows > 0:
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
 
@@ -1407,7 +1420,7 @@ class IndicatorCalculator:
             self.logger.error(f"❌ 处理股票 {stock_code} RSI 失败: {e}", exc_info=True)
             return 0
 
-    def process_single_stock_rsi_by_ta_lib(self, stock_code: str, daily_type: dict) -> int:
+    def process_single_stock_rsi_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
         """
         使用 TA-Lib 高效计算单只股票的 RSI（6/12/24日），支持增量更新与线程安全
         """
@@ -1452,8 +1465,8 @@ class IndicatorCalculator:
             df = df.sort_values('stock_date').reset_index(drop=True)
 
             # ✅ 关键：RSI 最小窗口 = 24（因要计算 RSI_24）
-            if len(df) < 24:
-                self.logger.info(f"股票 {stock_code} 交易日不足24天（{len(df)}天），无法计算完整RSI，跳过")
+            if len(df) < 25:
+                self.logger.info(f"股票 {stock_code} 交易日不足25天（{len(df)}天），无法计算完整RSI，跳过")
                 return 0
 
             # 3. ✅ 核心：使用 TA-Lib 计算 RSI（6/12/24）
@@ -1478,6 +1491,7 @@ class IndicatorCalculator:
 
             if final_df.empty:
                 self.logger.info(f"股票 {stock_code} 计算RSI后无有效数据")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 return 0
 
             # 替换 NaN 为 None（MySQL 兼容）
@@ -1563,13 +1577,13 @@ class IndicatorCalculator:
                     result = processor.mysql_manager.query_one(sql, (stock_code,))
                     cnt = result['cnt'] if result else 0
 
-                    if cnt < 6:  # ✅ RSI最小窗口=6天
-                        processor.logger.info(f"股票 {stock_code} 交易日不足6天（{cnt}天），无法计算RSI，跳过")
+                    if cnt < 25:  # ✅ RSI最小窗口=6天
+                        processor.logger.info(f"股票 {stock_code} 交易日不足25天（{cnt}天），无法计算RSI，跳过")
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                         return
 
                     # ✅ 执行RSI计算（使用标准逻辑）
-                    rows = processor.process_single_stock_rsi_by_ta_lib(stock_code, daily_type)
+                    rows = processor.process_single_stock_rsi_by_ta_lib(stock_code, daily_type, redis_key)
                     if rows > 0:
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
 
@@ -1729,7 +1743,7 @@ class IndicatorCalculator:
         :param date_type: 周期类型 ('d' 日线, 'w' 周线, 'm' 月线)
         :param max_auto_retries: 最大自动重试轮数（防死循环）
         """
-        # ✅ 关键修正：获取CCI配置（类似RSI的get_rsi_type）
+        # ✅ 关键修正：获取CCI配置（类似CCI的get_cci_type）
         daily_type = self.indicator_config.get_cci_type(date_type)
         redis_key = f'cci:{date_type}'
         now_day = datetime.datetime.now().strftime('%Y-%m-%d')
@@ -1775,7 +1789,7 @@ class IndicatorCalculator:
                         return
 
                     # ✅ 执行CCI计算（使用标准逻辑）
-                    rows = processor.process_single_stock_cci_by_ta_lib(stock_code, daily_type)
+                    rows = processor.process_single_stock_cci_by_ta_lib(stock_code, daily_type, redis_key)
                     if rows > 0:
                         processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
 
@@ -1816,7 +1830,7 @@ class IndicatorCalculator:
         for date_type in ['d', 'w', 'm']:
             self.run_batch_cci_multithread(date_type=date_type)
 
-    def process_single_stock_cci_by_ta_lib(self, stock_code: str, daily_type: dict) -> int:
+    def process_single_stock_cci_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
         """
         使用 TA-Lib 高效计算单只股票的 CCI（商品通道指数）
         """
@@ -1876,6 +1890,8 @@ class IndicatorCalculator:
             # 6. 清理 NaN（前13天无有效值）
             result_df = result_df.dropna(subset=['cci']).reset_index(drop=True)
             if result_df.empty:
+                self.logger.info(f"股票 {stock_code} CCI计算无效")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
                 return 0
 
             # 7. 替换 NaN 为 None（兼容 MySQL）
@@ -1911,11 +1927,211 @@ class IndicatorCalculator:
             self.logger.error(f"❌ 股票 {stock_code} CCI计算失败: {e}", exc_info=True)
             return 0
 
+    def process_single_stock_adx_by_ta_lib(self, stock_code: str, daily_type: dict, redis_key: str) -> int:
+        """
+        使用 TA-Lib 高效计算单只股票的 ADX 系统（ADX / +DI / -DI），支持增量更新与线程安全
+        """
+        update_column = daily_type['update_column']
+        data_table = daily_type['data_table']
+        update_table = daily_type['update_table']  # ADX结果表，如 stock_date_adx
+        update_record_table = daily_type['update_record_table']
+        trade_status = daily_type['tradestatus']
+
+        try:
+            # 1. 查询增量价格数据（需 high, low, close）
+            price_sql = f"""
+                SELECT 
+                    stock_code, 
+                    stock_date, 
+                    high_price, 
+                    low_price, 
+                    close_price
+                FROM stock.{data_table}
+                WHERE stock_code = %s 
+                  {trade_status}
+                ORDER BY stock_date
+            """
+            raw_data = self.mysql_manager.query_all(price_sql, (stock_code,))
+            if not raw_data:
+                return 0
+
+            df = pd.DataFrame(raw_data)
+            if df.empty:
+                return 0
+
+            # 2. 数据清洗：转换为数值，处理 MySQL DECIMAL
+            for col in ['high_price', 'low_price', 'close_price']:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna(subset=['high_price', 'low_price', 'close_price']).copy()
+            df['stock_date'] = pd.to_datetime(df['stock_date'])
+            df = df.sort_values('stock_date').reset_index(drop=True)
+
+            # ✅ 关键：ADX 最小有效窗口（默认周期14，建议至少25天）
+            if len(df) < 25:
+                self.logger.info(f"股票 {stock_code} 交易日不足25天（{len(df)}天），无法计算完整ADX，跳过")
+                return 0
+
+            # 3. ✅ 核心：使用 TA-Lib 计算 ADX 系统
+            high = df['high_price'].values.astype(np.float64)
+            low = df['low_price'].values.astype(np.float64)
+            close = df['close_price'].values.astype(np.float64)
+
+            adx = talib.ADX(high, low, close, timeperiod=14)
+            plus_di = talib.PLUS_DI(high, low, close, timeperiod=14)
+            minus_di = talib.MINUS_DI(high, low, close, timeperiod=14)
+
+            # 4. 添加到 DataFrame
+            df['adx'] = adx
+            df['plus_di'] = plus_di
+            df['minus_di'] = minus_di
+
+            # 5. 清理无效值（TA-Lib 前 N 天返回 NaN）
+            final_df = df[[
+                'stock_code', 'stock_date', 'adx', 'plus_di', 'minus_di'
+            ]].copy()
+
+            # 保留至少 adx 有值的行（通常从第20天起有效）
+            final_df = final_df.dropna(subset=['adx'], how='all').reset_index(drop=True)
+
+            if final_df.empty:
+                self.logger.info(f"股票 {stock_code} 计算ADX后无有效数据")
+                self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+                return 0
+
+            # 替换 NaN 为 None（MySQL 兼容）
+            final_df = final_df.replace({np.nan: None})
+
+            # 6. 入库
+            def _do_insert():
+                return self.mysql_manager.batch_insert_or_update(
+                    table_name=update_table,
+                    df=final_df,
+                    unique_keys=['stock_code', 'stock_date']
+                )
+
+            cnt = self._execute_with_deadlock_retry(_do_insert)
+
+            if cnt > 0:
+                max_date = final_df['stock_date'].max()
+
+                # 更新记录表
+                def _do_update():
+                    sql = f"""
+                        INSERT INTO {update_record_table} (stock_code, {update_column})
+                        VALUES (%s, %s)
+                        ON DUPLICATE KEY UPDATE {update_column} = VALUES({update_column})
+                    """
+                    return self.mysql_manager.execute(sql, (stock_code, max_date))
+
+                self._execute_with_deadlock_retry(_do_update)
+                self.logger.info(f"✅ 股票 {stock_code} 新增 {cnt} 条 ADX，更新至 {max_date}")
+                return cnt
+
+            return 0
+
+        except Exception as e:
+            self.logger.error(f"❌ 股票 {stock_code} ADX(TA-Lib) 计算失败: {e}", exc_info=True)
+            return 0
+
+    def run_batch_adx_multithread(self, max_workers: int = 6, date_type='d', max_auto_retries=10):
+        """
+        多线程批量计算ADX系统（ADX / +DI / -DI），支持自动重试直到Redis清空
+        :param max_workers: 线程数
+        :param date_type: 周期类型 ('d' 日线, 'w' 周线, 'm' 月线)
+        :param max_auto_retries: 最大自动重试轮数（防死循环）
+        """
+        # 获取ADX配置（需在 indicator_config 中定义 get_adx_type）
+        daily_type = self.indicator_config.get_adx_type(date_type)
+        redis_key = f'adx:{date_type}'
+        now_day = datetime.datetime.now().strftime('%Y-%m-%d')
+        retry_count = 0
+
+        while retry_count <= max_auto_retries:
+            stock = BaostockFetcher()
+            if retry_count == 0:
+                stock_codes = stock.get_pending_stocks(redis_key, 'stock')
+            else:
+                stock_codes = stock.redis_manager.get_unprocessed_stocks(now_day, redis_key)
+
+            self.logger.info(f"第 {retry_count} 轮重试：正在处理股票ADX")
+
+            if not stock_codes:
+                if retry_count == 0:
+                    self.logger.warning("未找到有效股票数据")
+                else:
+                    self.logger.info("✅ 所有待处理股票ADX已计算完毕")
+                return
+
+            total = len(stock_codes)
+            if retry_count == 0:
+                self.logger.info(f"启动多线程ADX计算，共 {total} 只股票，线程数: {max_workers}")
+            else:
+                self.logger.info(f"第 {retry_count + 1} 轮重试：仍有 {total} 只股票待处理")
+
+            def worker(stock_code):
+                """每个线程独立处理一只股票（线程安全）"""
+                processor = None
+                try:
+                    # ✅ 创建全新IndicatorCalculator实例（避免连接共享）
+                    processor = IndicatorCalculator()
+
+                    # ✅ 检查数据量（ADX需要至少25天）
+                    sql = f"SELECT COUNT(*) AS cnt FROM stock.{daily_type['data_table']} WHERE stock_code = %s"
+                    result = processor.mysql_manager.query_one(sql, (stock_code,))
+                    cnt = result['cnt'] if result else 0
+
+                    if cnt < 25:  # ADX 最小窗口建议 ≥25 天
+                        processor.logger.info(f"股票 {stock_code} 交易日不足25天（{cnt}天），无法计算ADX，跳过")
+                        processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+                        return
+
+                    # ✅ 执行ADX计算（使用标准逻辑）
+                    rows = processor.process_single_stock_adx_by_ta_lib(stock_code, daily_type, redis_key)
+                    if rows > 0:
+                        processor.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+
+                except Exception as e:
+                    processor.logger.error(f"[线程{threading.get_ident()}] 股票 {stock_code} ADX计算失败: {e}",
+                                           exc_info=True)
+                finally:
+                    if processor:
+                        processor.close()  # 关闭子线程的DB/Redis连接
+
+            # 启动线程池执行本轮任务
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(worker, code) for code in stock_codes]
+                for i, _ in enumerate(as_completed(futures), 1):
+                    if i % 50 == 0 or i == total:
+                        self.logger.info(f"✅ 已完成 {i}/{total} 只股票ADX计算")
+
+            # 检查是否还有剩余任务
+            retry_count += 1
+            remaining = self.redis_manager.get_unprocessed_stocks(now_day, redis_key)
+
+            if not remaining:
+                self.logger.info("✅ 所有ADX任务处理完成")
+                return
+
+            if retry_count <= max_auto_retries:
+                wait_sec = 5
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，{wait_sec}秒后启动第 {retry_count + 1} 轮...")
+                time.sleep(wait_sec)
+            else:
+                self.logger.error(f"❌ 达到最大重试轮数 ({max_auto_retries})，仍有 {len(remaining)} 只股票ADX未处理")
+                return
+
+    # 计算所有时间段的ADX
+    def run_batch_adx_all_time_period(self):
+        """批量处理所有时间段"""
+        for date_type in ['d', 'w', 'm']:
+            self.run_batch_adx_multithread(date_type=date_type)
+
 
 if __name__ == '__main__':
     # 创建实例
     indicator_calculator = IndicatorCalculator()
-    indicator_calculator.process_single_stock_ma_by_ta_lib('600000',
-                                                           indicator_calculator.indicator_config.get_ma_type('d'))
-    # indicator_calculator.run_batch_cci_multithread()
+    indicator_calculator.process_single_stock_adx_by_ta_lib('600000',
+                                                             indicator_calculator.indicator_config.get_adx_type('d'),
+                                                             'adx')
+
     indicator_calculator.close()

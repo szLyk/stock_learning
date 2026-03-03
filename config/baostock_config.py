@@ -101,6 +101,21 @@ def get_index_stock_month_fields() -> Dict[str, Any]:
     }
 
 
+def get_stock_min_fields() -> Dict[str, Any]:
+    return {
+        'date': 'stock_date',
+        'time': 'stock_time',
+        'code': 'stock_code',
+        'open': 'open_price',
+        'high': 'high_price',
+        'low': 'low_price',
+        'close': 'close_price',
+        'volume': 'trading_volume',
+        'amount': 'trading_amount',
+        'adjustflag': 'adjust_flag'
+    }
+
+
 # updateDate	code	code_name	industry	industryClassification
 def get_stock_industry_fields() -> Dict[str, Any]:
     return {
@@ -149,10 +164,15 @@ class BAOSTOCK_CONFIG(BaseConfig[Dict[str, Any]]):
                 "month_index_stock_fields",
                 fallback="date,code,open,high,low,close,volume,amount,pctChg"
             ),
+            "min_stock_fields": self.get_str(
+                "min_stock_fields",
+                fallback="date,code,open,high,low,close,volume,amount,time,adjustflag"
+            ),
             # 频率配置（日/周/月）
             "day_frequency": self.get_str("day_frequency", fallback="d"),
             "week_frequency": self.get_str("week_frequency", fallback="w"),
             "month_frequency": self.get_str("month_frequency", fallback="m"),
+            "min_frequency": self.get_str("min_frequency", fallback="15"),
             # 复权类型（0-不复权，1-前复权，2-后复权，3-定点复权）
             "adjustflag": self.get_str("adjustflag", fallback="3")
         }

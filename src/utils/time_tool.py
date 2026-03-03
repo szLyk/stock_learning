@@ -27,20 +27,17 @@ def find_last_trading_day_of_week(given_date):
     date = pd.to_datetime(given_date)
     # 创建中国节假日实例
     cn_holidays = holidays.country_holidays('CN', years=[date.year])  # 指定年份以提高效率
-    """ 找到给定日期所在周的周五，并返回该周最后一个交易日 """
+    """
+    找到给定日期所在周的周五，并返回该周最后一个交易日
+    """
     # 计算给定日期所在周的周五
-    friday_of_week = date + pd.offsets.Week(weekday=4) - pd.offsets.Week()
-    if friday_of_week > date:
-        friday_of_week -= pd.offsets.Week()
-
-    # 确保我们从包含给定日期的那一周的周五开始
-    friday_of_week += pd.offsets.Week()
-
+    friday_of_week = date - pd.Timedelta(days=date.weekday() - 4)  # 4表示周五
+    if friday_of_week < date:
+        friday_of_week += pd.Timedelta(days=7)  # 如果周五在给定日期之前，则加一周
     # 向前查找最近的交易日
     current_day = friday_of_week
     while current_day.weekday() > 4 or current_day in cn_holidays:  # 如果是周末或节假日
         current_day -= pd.Timedelta(days=1)
-
     return current_day.date()
 
 
@@ -90,3 +87,7 @@ def is_weekend(date):
 # 当前时间是否是月初第一天 并且是周末 传入字符串日期
 def is_last_day_of_month(date):
     return datetime.strptime(date, '%Y-%m-%d').day == 1 and is_weekend(date)
+
+
+if __name__ == '__main__':
+    print(find_last_trading_day_of_week('1990-12-21'))

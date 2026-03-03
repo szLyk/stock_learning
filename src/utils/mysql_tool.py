@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from pymysql import IntegrityError
-
+import os
 from config.mysql_config import get_mysql_config_instance
 import pymysql
 from pymysql.cursors import DictCursor
@@ -10,125 +10,115 @@ from contextlib import contextmanager
 
 from logs.logger import LogManager
 
+# 👇 新增导入
+from dbutils.pooled_db import PooledDB
+
 
 class MySQLUtil:
-    """MySQL工具类，封装常用数据库操作，包含完善的异常处理"""
+    """MySQL工具类（使用连接池，线程安全）"""
+
+    # 类变量：全局唯一的连接池（单例）
+    _pool: Optional[PooledDB] = None
 
     def __init__(self):
-        # 获取配置实例
-        self.config = get_mysql_config_instance().get_config()
-        self.conn: Optional[pymysql.connections.Connection] = None  # 数据库连接对象
-        self.cursor = None  # 游标对象
+        # 初始化连接池（只执行一次）
+        if MySQLUtil._pool is None:
+            config = get_mysql_config_instance().get_config()
+            MySQLUtil._pool = PooledDB(
+                creator=pymysql,  # 使用 pymysql 作为底层驱动
+                host=config["host"],
+                port=config["port"],
+                user=config["user"],
+                password=config["password"],
+                database=config["database"],
+                charset=config["charset"],
+                connect_timeout=config["connect_timeout"],
+                read_timeout=config["read_timeout"],
+                write_timeout=config["write_timeout"],
+                cursorclass=DictCursor,
+
+                # 连接池配置
+                mincached=2,  # 启动时创建的空闲连接数
+                maxcached=10,  # 最大空闲连接数（超过则关闭）
+                maxshared=10,  # 最大共享连接数（pymysql 不支持共享，可忽略）
+                maxconnections=20,  # 最大总连接数（重要！防打满）
+                blocking=True,  # 连接数达上限时，是否阻塞等待
+                ping=1,  # 每次从池取连接时 ping 一下（检查有效性）
+            )
+        self.conn = None
+        self.cursor = None
         self.logger = LogManager.get_logger("mysql_util")
 
     def connect(self) -> None:
-        """建立数据库连接，处理连接失败异常"""
+        """从连接池获取一个连接（非新建！）"""
         try:
-            self.conn = pymysql.connect(
-                host=self.config["host"],
-                port=self.config["port"],
-                user=self.config["user"],
-                password=self.config["password"],
-                database=self.config["database"],
-                charset=self.config["charset"],
-                connect_timeout=self.config["connect_timeout"],
-                read_timeout=self.config["read_timeout"],
-                write_timeout=self.config["write_timeout"],
-                cursorclass=DictCursor  # 游标返回字典格式（方便使用）
-            )
+            self.conn = MySQLUtil._pool.connection()  # 从池中借一个连接
             self.cursor = self.conn.cursor()
-            print("数据库连接成功！")  # 新增：提示连接成功
-        except pymysql.MySQLError as e:
-            raise RuntimeError(f"数据库连接失败：{str(e)}")
+            # print("从连接池获取数据库连接")  # 可选日志
+        except Exception as e:
+            raise RuntimeError(f"从连接池获取数据库连接失败：{str(e)}")
 
     def close(self) -> None:
-        """关闭数据库连接（游标+连接），确保资源释放"""
+        """归还连接到池（不是真正关闭）"""
         if self.cursor:
             try:
                 self.cursor.close()
             except Exception as e:
-                print(f"关闭游标失败：{str(e)}")
+                self.logger.warning(f"关闭游标失败：{e}")
         if self.conn:
             try:
-                self.conn.close()
-                print("数据库连接已关闭！")  # 新增：提示关闭成功
+                self.conn.close()  # 归还到连接池
+                # print("数据库连接已归还到池")  # 可选日志
             except Exception as e:
-                print(f"关闭连接失败：{str(e)}")
+                self.logger.warning(f"归还连接失败：{e}")
 
     def __enter__(self) -> "MySQLUtil":
-        """上下文管理器入口，自动连接数据库"""
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
-        """上下文管理器出口，自动关闭连接，处理异常"""
         if exc_type:
-            # 有异常时回滚事务
-            if self.conn:
+            if hasattr(self.conn, 'rollback'):
                 self.conn.rollback()
             self.logger.error(f"执行异常：{exc_val}")
         else:
-            # 无异常时提交事务
-            if self.conn:
+            if hasattr(self.conn, 'commit'):
                 self.conn.commit()
         self.close()
-        # 返回True表示已处理异常，不会向外抛出；返回False则抛出
         return False
 
+    # ========== 以下方法保持不变（仅微调异常处理） ==========
+
     def query_one(self, sql: str, params: Tuple = ()) -> Optional[Dict[str, Any]]:
-        """
-        查询单条数据
-        :param sql: 查询SQL语句
-        :param params: SQL参数（防止SQL注入）
-        :return: 单条数据字典，无数据返回None
-        """
         if not self.conn or not self.cursor:
             raise RuntimeError("数据库未连接，请先调用connect()或使用with语句")
         try:
             self.cursor.execute(sql, params)
             return self.cursor.fetchone()
-        except pymysql.MySQLError as e:
+        except Exception as e:
             raise RuntimeError(f"查询单条数据失败：{str(e)}")
 
     def query_all(self, sql: str, params: Tuple = ()) -> List[Dict[str, Any]]:
-        """
-        查询多条数据
-        :param sql: 查询SQL语句
-        :param params: SQL参数
-        :return: 数据列表（元素为字典），无数据返回空列表
-        """
         if not self.conn or not self.cursor:
             raise RuntimeError("数据库未连接，请先调用connect()或使用with语句")
         try:
             self.cursor.execute(sql, params)
             return self.cursor.fetchall()
-        except pymysql.MySQLError as e:
+        except Exception as e:
             raise RuntimeError(f"查询多条数据失败：{str(e)}")
 
     def execute(self, sql: str, params: Tuple = ()) -> int:
-        """
-        执行单条增/删/改操作
-        :param sql: 执行的SQL语句
-        :param params: SQL参数
-        :return: 受影响的行数
-        """
         if not self.conn or not self.cursor:
             raise RuntimeError("数据库未连接，请先调用connect()或使用with语句")
         try:
             affected_rows = self.cursor.execute(sql, params)
-            self.conn.commit()  # 手动提交（非上下文管理器模式下）
+            self.conn.commit()
             return affected_rows
-        except pymysql.MySQLError as e:
-            self.conn.rollback()  # 异常时回滚
+        except Exception as e:
+            self.conn.rollback()
             raise RuntimeError(f"执行SQL失败：{str(e)}")
 
     def batch_execute(self, sql: str, params_list: List[Tuple]) -> int:
-        """
-        批量执行增/删/改操作（效率更高）
-        :param sql: 执行的SQL语句
-        :param params_list: 参数列表（每个元素为一个参数元组）
-        :return: 受影响的总行数
-        """
         if not self.conn or not self.cursor:
             raise RuntimeError("数据库未连接，请先调用connect()或使用with语句")
         if not params_list:
@@ -137,56 +127,40 @@ class MySQLUtil:
             affected_rows = self.cursor.executemany(sql, params_list)
             self.conn.commit()
             return affected_rows
-        except pymysql.MySQLError as e:
+        except Exception as e:
             self.conn.rollback()
             raise RuntimeError(f"批量执行SQL失败：{str(e)}")
 
     @contextmanager
     def transaction(self):
-        """事务管理器，支持手动提交和回滚"""
         if not self.conn or not self.cursor:
             raise RuntimeError("数据库未连接，请先调用connect()或使用with语句")
         try:
             yield
             self.conn.commit()
-        except pymysql.MySQLError as e:
+        except Exception as e:
             self.conn.rollback()
             raise RuntimeError(f"事务执行失败：{str(e)}")
 
-        # ------------------- 新增：通用插入/更新（UPSERT）方法 -------------------
-
     def _validate_field_name(self, field_name: str) -> bool:
-        """校验字段名合法性（防SQL注入）：仅允许字母、数字、下划线"""
         return field_name.isidentifier() and not field_name.startswith(('_', 'mysql'))
 
     def batch_insert_or_update(self, table_name, df, unique_keys):
-        """
-        批量插入/更新DataFrame数据到MySQL
-        :param table_name: 表名
-        :param df: 要插入的DataFrame
-        :param unique_keys: 唯一键列表（如['stock_code']），用于冲突时更新
-        :return: 影响行数
-        """
-        # 将nan值替换为None
         df = df.replace(np.nan, None)
-        # ========== 修复核心：正确判断DataFrame是否为空 ==========
-        if df.empty:  # 替换原有的 if not data_list:
+        if df.empty:
             print("DataFrame为空，无需入库")
             return 0
 
-        # 将DataFrame转为字典列表（适配批量插入）
         data_list = df.where(pd.notnull(df), None).to_dict('records')
         if not data_list:
             print("数据列表为空，无需入库")
             return 0
 
-        # 提取字段名（排除空值列）
         columns = [col for col in df.columns if col in data_list[0]]
         if not columns:
             print("无有效字段，无需入库")
             return 0
 
-        # 构建插入SQL（ON DUPLICATE KEY UPDATE）
         placeholders = ', '.join(['%s'] * len(columns))
         col_str = ', '.join(columns)
         update_str = ', '.join([f"{col} = VALUES({col})" for col in columns if col not in unique_keys])
@@ -196,11 +170,8 @@ class MySQLUtil:
             VALUES ({placeholders}) 
             ON DUPLICATE KEY UPDATE {update_str}
         """
-        # 批量执行
         try:
-            # 提取数据值（保持字段顺序）
             values = [tuple([item[col] for col in columns]) for item in data_list]
-            # 批量插入（每次插入1000条，避免SQL过长）
             batch_size = 5000
             total_rows = 0
             for i in range(0, len(values), batch_size):
@@ -216,35 +187,67 @@ class MySQLUtil:
             return 0
         except Exception as e:
             self.conn.rollback()
-            if df is not None and 'stock_code' in df.columns:
-                stock_code = df['stock_code'].iloc[0] if not df.empty else 'UNKNOWN'
-                self.logger.error(f"{stock_code}: 批量入库失败：{e}")
-            else:
-                self.logger.error(f"批量入库失败：{e}")
+            stock_code = df['stock_code'].iloc[0] if not df.empty and 'stock_code' in df.columns else 'UNKNOWN'
+            self.logger.error(f"{stock_code}: 批量入库失败：{e}")
             return 0
-        finally:
-            # 不要关闭连接，留给外部管理
-            pass
+
+    def export_stock_db_schema(self, output_file: str = "../../config/mysql_table.sql"):
+        if not self.conn or not self.cursor:
+            raise RuntimeError("数据库未连接，请先调用 connect() 或使用 with 上下文管理器")
+
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        config = get_mysql_config_instance().get_config()
+
+        try:
+            cursor = self.conn.cursor(DictCursor)
+            cursor.execute("""
+                SELECT TABLE_NAME 
+                FROM information_schema.TABLES 
+                WHERE TABLE_SCHEMA = %s 
+                ORDER BY TABLE_NAME
+            """, (config["database"],))
+
+            tables = [row['TABLE_NAME'] for row in cursor.fetchall()]
+            if not tables:
+                print(f"警告：数据库 {config['database']} 中未找到任何表！")
+                return
+
+            with open(output_file, 'w', encoding='utf8') as f:
+                f.write(f"-- 自动生成 stock 库表结构\n")
+                f.write(f"-- 时间: {pymysql.__version__} | Database: {config['database']}\n\n")
+                f.write(f"USE `{config['database']}`;\n\n")
+
+                for table_name in tables:
+                    if not table_name.replace('_', '').replace('-', '').isalnum():
+                        print(f"跳过非法表名: {table_name}")
+                        continue
+
+                    cursor.execute(f"SHOW CREATE TABLE `{config['database']}`.`{table_name}`")
+                    result = cursor.fetchone()
+                    create_sql = result.get('Create Table') if result else None
+
+                    if create_sql:
+                        f.write(f"-- --------------------------------------------------------\n")
+                        f.write(f"-- Table structure for table `{table_name}`\n")
+                        f.write(f"-- --------------------------------------------------------\n")
+                        f.write(f"DROP TABLE IF EXISTS `{table_name}`;\n")
+                        f.write(create_sql + ";\n\n")
+                    else:
+                        print(f"跳过无法读取的表: {table_name}")
+
+            print(f"✅ 成功导出 {len(tables)} 张表结构到: {os.path.abspath(output_file)}")
+
+        except Exception as e:
+            print(f"❌ 导出失败: {e}")
+            raise
 
 
+# ===== 测试用法（完全兼容旧代码）=====
 if __name__ == "__main__":
-    # 修正测试代码：正确调用connect方法
+    # 方式1：手动管理
+    db = MySQLUtil()
+    db.connect()
     try:
-        # 方式1：手动调用（测试连接）
-        mysql_util = MySQLUtil()  # 创建实例
-        mysql_util.connect()  # 调用连接方法（无需传self）
-        # 测试查询（示例）
-        result = mysql_util.query_all("SELECT * from stock_industry limit 500")
-        print("测试查询结果：", result)
-    except Exception as e:
-        print(f"测试失败：{str(e)}")
+        db.export_stock_db_schema()
     finally:
-        mysql_util.close()  # 确保关闭连接
-
-    # 方式2：推荐使用上下文管理器（自动连接/关闭）
-    # try:
-    #     with MySQLUtil() as mysql:
-    #         result = mysql.query_one("SELECT 1 as test")
-    #         print("上下文管理器测试结果：", result)
-    # except Exception as e:
-    #     print(f"上下文管理器测试失败：{str(e)}")
+        db.close()
