@@ -532,9 +532,9 @@ class BaostockFetcher:
                 else:
                     self.calculate_stock_week_price()
             elif time_period == 'kd':
-                fetcher.batch_process_stock_data(date_type='kd', update_record_table='update_index_stock_record')
-                fetcher.calculate_index_stock_week_price()
-                fetcher.calculate_index_stock_month_price()
+                self.batch_process_stock_data(date_type='kd', update_record_table='update_index_stock_record')
+                self.calculate_index_stock_week_price()
+                self.calculate_index_stock_month_price()
             else:
                 if time_tool.is_last_day_of_month(time_tool.get_last_some_time(0)):
                     self.batch_process_stock_data(time_period)
