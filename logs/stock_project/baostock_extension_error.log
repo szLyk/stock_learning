@@ -1,1 +1,0 @@
-2026-03-14 22:48:19 - baostock_extension - baostock_extension:91 - ERROR - 获取资金流向异常 sh.601398: module 'baostock' has no attribute 'query_money_flow_data'
