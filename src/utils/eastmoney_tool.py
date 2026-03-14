@@ -1,75 +1,67 @@
 # -*- coding: utf-8 -*-
 """
-东方财富数据采集工具
-功能：资金流向、股东人数、概念板块、分析师评级等
+东方财富数据采集工具（带 Redis 断点重试）
+功能：资金流向、北向资金、股东人数、概念板块、分析师评级
 
-API 文档参考：
-- 资金流向：http://push2.eastmoney.com/api/qt/stock/fflow/daykline/get
-- 股东人数：http://datacenter-web.eastmoney.com/api/data/v1/get
-- 概念板块：http://push2.eastmoney.com/api/qt/stock/get
-- 北向资金：http://push2.eastmoney.com/api/qt/stock/fflow/kline/get
+Redis 任务队列：
+- eastmoney:moneyflow - 资金流向待采集
+- eastmoney:north - 北向资金待采集
+- eastmoney:shareholder - 股东人数待采集
+- eastmoney:concept - 概念板块待采集
+- eastmoney:analyst - 分析师评级待采集
 """
 
-import requests
+import datetime
 import pandas as pd
 import time
-from datetime import datetime, timedelta
+import requests
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
+from src.utils.redis_tool import RedisUtil
 
 
 class EastMoneyFetcher:
-    """东方财富数据采集器"""
+    """东方财富数据采集器（支持 Redis 断点重试）"""
     
     def __init__(self):
         self.logger = LogManager.get_logger("eastmoney_fetcher")
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
-        self.now_date = datetime.now().strftime('%Y-%m-%d')
+        self.redis_manager = RedisUtil() if RedisUtil else None
+        self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
         
         # 东方财富 API 基础 URL
         self.base_url = "http://push2.eastmoney.com"
         self.datacenter_url = "http://datacenter-web.eastmoney.com"
         
-        # 请求头（模拟浏览器）
+        # 请求头
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'http://quote.eastmoney.com/',
             'Accept': 'application/json, text/plain, */*'
         }
     
     def _get_secid(self, stock_code):
-        """
-        获取证券 ID（东方财富格式）
-        :param stock_code: 股票代码（如 601398）
-        :return: secid (如 1.601398)
-        """
+        """获取证券 ID（东方财富格式）"""
         if stock_code.startswith('6'):
-            return f"1.{stock_code}"  # 沪市
+            return f"1.{stock_code}"
         elif stock_code.startswith('0') or stock_code.startswith('3'):
-            return f"0.{stock_code}"  # 深市
+            return f"0.{stock_code}"
         else:
             return f"1.{stock_code}"
     
     # =====================================================
-    # 资金流向数据
+    # 数据获取接口
     # =====================================================
     
     def fetch_moneyflow(self, stock_code, start_date=None, end_date=None, limit=1000):
-        """
-        获取个股资金流向数据（日频）
-        :param stock_code: 股票代码（如 601398）
-        :param start_date: 开始日期（YYYY-MM-DD）
-        :param end_date: 结束日期（YYYY-MM-DD）
-        :param limit: 返回数据条数
-        :return: DataFrame
-        """
+        """获取个股资金流向数据"""
         secid = self._get_secid(stock_code)
         
         url = f"{self.base_url}/api/qt/stock/fflow/daykline/get"
         params = {
             'lmt': limit,
-            'klt': 1,  # 1=日，5=5 日，10=10 日
+            'klt': 1,
             'fields1': 'f1,f2,f3,f7',
             'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65',
             'ut': 'b2884a393a59ad64002292a3e90d46a5',
@@ -84,7 +76,6 @@ class EastMoneyFetcher:
             if data.get('data') is None or data['data'].get('klines') is None:
                 return pd.DataFrame()
             
-            # 解析数据
             klines = data['data']['klines']
             columns = ['trade_date', 'main_net_in', 'sm_net_in', 'mm_net_in', 'bm_net_in',
                       'main_net_in_rate', 'sm_net_in_rate', 'mm_net_in_rate', 'bm_net_in_rate',
@@ -93,7 +84,6 @@ class EastMoneyFetcher:
             
             df = pd.DataFrame([line.split(',') for line in klines], columns=columns)
             
-            # 数据清洗
             df['stock_code'] = stock_code
             df['stock_date'] = pd.to_datetime(df['trade_date']).dt.date
             df['main_net_in'] = pd.to_numeric(df['main_net_in'], errors='coerce')
@@ -104,7 +94,6 @@ class EastMoneyFetcher:
             df['change_rate'] = pd.to_numeric(df['change_rate'], errors='coerce')
             df['turnover_rate'] = pd.to_numeric(df['turnover_rate'], errors='coerce')
             
-            # 筛选日期范围
             if start_date:
                 df = df[df['stock_date'] >= pd.to_datetime(start_date).date()]
             if end_date:
@@ -118,13 +107,7 @@ class EastMoneyFetcher:
             return pd.DataFrame()
     
     def fetch_north_moneyflow(self, stock_code, start_date=None, end_date=None, limit=1000):
-        """
-        获取北向资金持仓数据
-        :param stock_code: 股票代码
-        :param start_date: 开始日期
-        :param end_date: 结束日期
-        :return: DataFrame
-        """
+        """获取北向资金持仓数据"""
         secid = self._get_secid(stock_code)
         
         url = f"{self.base_url}/api/qt/stock/fflow/kline/get"
@@ -132,7 +115,7 @@ class EastMoneyFetcher:
             'lmt': limit,
             'klt': 1,
             'fields1': 'f1,f2,f3,f7',
-            'fields2': 'f51,f52,f53',  # 日期，北向持仓，北向增持
+            'fields2': 'f51,f52,f53',
             'ut': 'b2884a393a59ad64002292a3e90d46a5',
             'secid': secid
         }
@@ -153,26 +136,19 @@ class EastMoneyFetcher:
             df['north_hold'] = pd.to_numeric(df['north_hold'], errors='coerce')
             df['north_net_in'] = pd.to_numeric(df['north_net_in'], errors='coerce')
             
+            if start_date:
+                df = df[df['stock_date'] >= pd.to_datetime(start_date).date()]
+            if end_date:
+                df = df[df['stock_date'] <= pd.to_datetime(end_date).date()]
+            
             return df[['stock_code', 'stock_date', 'north_hold', 'north_net_in']]
             
         except Exception as e:
             self.logger.error(f"获取北向资金失败 {stock_code}: {e}")
             return pd.DataFrame()
     
-    # =====================================================
-    # 股东人数数据
-    # =====================================================
-    
-    def fetch_shareholder_count(self, stock_code, year=None):
-        """
-        获取股东人数（季度数据）
-        :param stock_code: 股票代码
-        :param year: 年份
-        :return: DataFrame
-        """
-        if not year:
-            year = datetime.now().year
-        
+    def fetch_shareholder_count(self, stock_code):
+        """获取股东人数（季度数据）"""
         url = f"{self.datacenter_url}/api/data/v1/get"
         params = {
             'reportName': 'RPT_F10_EH_EQUITY',
@@ -195,8 +171,6 @@ class EastMoneyFetcher:
                 return pd.DataFrame()
             
             df = pd.DataFrame(data['result']['data'])
-            
-            # 重命名
             df = df.rename(columns={
                 'SECURITY_CODE': 'stock_code',
                 'SECURITY_NAME_ABBR': 'stock_name',
@@ -219,16 +193,8 @@ class EastMoneyFetcher:
             self.logger.error(f"获取股东人数失败 {stock_code}: {e}")
             return pd.DataFrame()
     
-    # =====================================================
-    # 概念板块数据
-    # =====================================================
-    
     def fetch_concept(self, stock_code):
-        """
-        获取股票所属概念板块
-        :param stock_code: 股票代码
-        :return: DataFrame
-        """
+        """获取股票所属概念板块"""
         secid = self._get_secid(stock_code)
         
         url = f"{self.base_url}/api/qt/stock/get"
@@ -248,9 +214,7 @@ class EastMoneyFetcher:
             stock_data = data['data']
             concept_raw = stock_data.get('f152', '')
             
-            # 处理不同类型的数据
             if isinstance(concept_raw, int):
-                # 如果是整数，说明没有概念数据
                 return pd.DataFrame()
             elif isinstance(concept_raw, str):
                 concept_str = concept_raw
@@ -260,9 +224,7 @@ class EastMoneyFetcher:
             if not concept_str or concept_str == '-':
                 return pd.DataFrame()
             
-            # 解析概念（格式："概念 A,概念 B,概念 C"）
             concepts = concept_str.split(',')
-            
             df = pd.DataFrame([{
                 'stock_code': stock_code,
                 'stock_name': stock_data.get('f14', ''),
@@ -281,19 +243,8 @@ class EastMoneyFetcher:
             self.logger.error(f"获取概念板块失败 {stock_code}: {e}")
             return pd.DataFrame()
     
-    # =====================================================
-    # 分析师评级数据
-    # =====================================================
-    
     def fetch_analyst_rating(self, stock_code, start_date=None, end_date=None, limit=100):
-        """
-        获取分析师评级和研报
-        :param stock_code: 股票代码
-        :param start_date: 开始日期
-        :param end_date: 结束日期
-        :param limit: 返回条数
-        :return: DataFrame
-        """
+        """获取分析师评级和研报"""
         url = f"{self.datacenter_url}/api/data/v1/get"
         params = {
             'reportName': 'RPT_RES_REPORT_INDEX',
@@ -315,8 +266,6 @@ class EastMoneyFetcher:
                 return pd.DataFrame()
             
             df = pd.DataFrame(data['result']['data'])
-            
-            # 重命名
             df = df.rename(columns={
                 'SECURITY_CODE': 'stock_code',
                 'SECURITY_NAME_ABBR': 'stock_name',
@@ -329,7 +278,6 @@ class EastMoneyFetcher:
             
             df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
             
-            # 评级打分
             rating_map = {'买入': 5.0, '增持': 4.0, '中性': 3.0, '减持': 2.0, '卖出': 1.0}
             df['rating_score'] = df['rating_type'].map(rating_map).fillna(3.0)
             
@@ -341,69 +289,196 @@ class EastMoneyFetcher:
             return pd.DataFrame()
     
     # =====================================================
+    # Redis 断点重试机制
+    # =====================================================
+    
+    def get_pending_stocks(self, data_type):
+        """从 Redis 获取待采集股票"""
+        if self.redis_manager is None:
+            # 无 Redis，从数据库获取
+            return self._get_pending_stocks_from_db(data_type)
+        
+        redis_key = f"eastmoney:{data_type}"
+        pending = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
+        
+        if not pending:
+            return self._get_pending_stocks_from_db(data_type)
+        
+        return pending
+    
+    def _get_pending_stocks_from_db(self, data_type):
+        """从数据库获取待采集股票"""
+        date_column_map = {
+            'moneyflow': 'update_moneyflow',
+            'north': 'update_north',
+            'shareholder': 'update_shareholder',
+            'concept': 'update_concept',
+            'analyst': 'update_analyst'
+        }
+        
+        date_column = date_column_map.get(data_type, 'update_moneyflow')
+        
+        # 获取 30 天内未更新的股票
+        sql = f"""
+        SELECT a.stock_code, b.stock_name, a.market_type 
+        FROM update_eastmoney_record a
+        LEFT JOIN stock_basic b ON a.stock_code = b.stock_code
+        WHERE ({date_column} IS NULL OR {date_column} < DATE_SUB(CURDATE(), INTERVAL 30 DAY))
+          AND b.stock_status = 1
+        LIMIT 500
+        """
+        
+        result = self.mysql_manager.query_all(sql)
+        if not result:
+            # 如果是新表，从 stock_basic 获取所有股票
+            sql = "SELECT stock_code, stock_name, market_type FROM stock_basic WHERE stock_status = 1 LIMIT 500"
+            result = self.mysql_manager.query_all(sql)
+        
+        if not result:
+            return []
+        
+        df = pd.DataFrame(result)
+        df['stock_code'] = df['market_type'] + '.' + df['stock_code']
+        return df['stock_code'].tolist()
+    
+    def update_record(self, stock_code, data_type, update_date):
+        """更新采集记录"""
+        date_column_map = {
+            'moneyflow': 'update_moneyflow',
+            'north': 'update_north',
+            'shareholder': 'update_shareholder',
+            'concept': 'update_concept',
+            'analyst': 'update_analyst'
+        }
+        
+        date_column = date_column_map.get(data_type)
+        if not date_column:
+            return
+        
+        sql = f"""
+        INSERT INTO update_eastmoney_record (stock_code, {date_column})
+        VALUES (%s, %s)
+        ON DUPLICATE KEY UPDATE {date_column} = VALUES({date_column})
+        """
+        self.mysql_manager.execute(sql, (stock_code, update_date))
+    
+    def mark_as_processed(self, stock_code, data_type):
+        """标记股票为已处理（从 Redis 移除）"""
+        if self.redis_manager is None:
+            return
+        
+        redis_key = f"eastmoney:{data_type}"
+        self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+    
+    # =====================================================
     # 批量采集
     # =====================================================
     
-    def batch_fetch_moneyflow(self, stock_codes, start_date=None, end_date=None):
-        """批量获取资金流向数据"""
-        self.logger.info(f"开始批量获取资金流向，共 {len(stock_codes)} 只股票")
+    def batch_fetch_with_retry(self, data_type, max_retries=5):
+        """
+        批量采集数据（带 Redis 断点重试）
+        :param data_type: 数据类型 (moneyflow/north/shareholder/concept/analyst)
+        :param max_retries: 最大重试轮数
+        """
+        self.logger.info(f"=== 开始采集 {data_type} ===")
         
-        all_dfs = []
-        for i, stock_code in enumerate(stock_codes):
-            df = self.fetch_moneyflow(stock_code, start_date, end_date)
-            if not df.empty:
-                all_dfs.append(df)
+        retry_count = 0
+        while retry_count <= max_retries:
+            stock_codes = self.get_pending_stocks(data_type)
             
-            if (i + 1) % 50 == 0:
-                self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
+            if not stock_codes:
+                if retry_count == 0:
+                    self.logger.warning("未找到待采集股票")
+                else:
+                    self.logger.info(f"✅ {data_type} 采集完成")
+                return
             
-            # 避免请求过快
-            if (i + 1) % 10 == 0:
-                time.sleep(0.3)
+            total = len(stock_codes)
+            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
+            
+            success_count = 0
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    # 根据类型调用不同接口
+                    if data_type == 'moneyflow':
+                        df = self.fetch_moneyflow(stock_code[-6:], start_date='2026-01-01')
+                        if not df.empty:
+                            self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
+                            self.update_record(stock_code[-6:], data_type, df['stock_date'].max())
+                            success_count += 1
+                    
+                    elif data_type == 'north':
+                        df = self.fetch_north_moneyflow(stock_code[-6:], limit=100)
+                        if not df.empty:
+                            self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
+                            self.update_record(stock_code[-6:], data_type, df['stock_date'].max())
+                            success_count += 1
+                    
+                    elif data_type == 'shareholder':
+                        df = self.fetch_shareholder_count(stock_code[-6:])
+                        if not df.empty:
+                            self.mysql_manager.batch_insert_or_update('stock_shareholder_info', df, ['stock_code', 'report_date'])
+                            self.update_record(stock_code[-6:], data_type, df['report_date'].max())
+                            success_count += 1
+                    
+                    elif data_type == 'concept':
+                        df = self.fetch_concept(stock_code[-6:])
+                        if not df.empty:
+                            self.mysql_manager.batch_insert_or_update('stock_concept', df, ['stock_code', 'concept_name'])
+                            self.update_record(stock_code[-6:], data_type, self.now_date)
+                            success_count += 1
+                    
+                    elif data_type == 'analyst':
+                        df = self.fetch_analyst_rating(stock_code[-6:], limit=50)
+                        if not df.empty:
+                            self.mysql_manager.batch_insert_or_update('stock_analyst_expectation', df, ['stock_code', 'publish_date'])
+                            self.update_record(stock_code[-6:], data_type, df['publish_date'].max())
+                            success_count += 1
+                    
+                    # 标记为已处理
+                    self.mark_as_processed(stock_code, data_type)
+                    
+                    if (i + 1) % 50 == 0:
+                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                    
+                    # 避免请求过快
+                    if (i + 1) % 10 == 0:
+                        time.sleep(0.3)
+                        
+                except Exception as e:
+                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+            
+            self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            
+            # 检查是否还有剩余
+            remaining = self.get_pending_stocks(data_type)
+            if not remaining:
+                self.logger.info(f"✅ {data_type} 全部采集完成")
+                return
+            
+            retry_count += 1
+            if retry_count <= max_retries:
+                wait_sec = 5
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，{wait_sec}秒后重试...")
+                time.sleep(wait_sec)
         
-        if all_dfs:
-            result = pd.concat(all_dfs, ignore_index=True)
-            self.logger.info(f"资金流向采集完成，共 {len(result)} 条记录")
-            return result
-        else:
-            self.logger.warning("资金流向采集结果为空")
-            return pd.DataFrame()
+        self.logger.error(f"❌ 达到最大重试次数，{data_type} 采集结束")
     
-    def batch_fetch_concept(self, stock_codes):
-        """批量获取概念板块"""
-        self.logger.info(f"开始批量获取概念板块，共 {len(stock_codes)} 只股票")
+    def run_full_collection(self):
+        """运行完整的数据采集流程"""
+        self.logger.info("=== 开始东方财富完整数据采集 ===")
         
-        all_dfs = []
-        for i, stock_code in enumerate(stock_codes):
-            df = self.fetch_concept(stock_code)
-            if not df.empty:
-                all_dfs.append(df)
+        # 依次采集各类型数据
+        for data_type in ['moneyflow', 'north', 'concept', 'shareholder', 'analyst']:
+            try:
+                self.batch_fetch_with_retry(data_type, max_retries=3)
+            except Exception as e:
+                self.logger.error(f"{data_type} 采集中断：{e}")
             
-            if (i + 1) % 100 == 0:
-                self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
-            
-            if (i + 1) % 20 == 0:
-                time.sleep(0.3)
+            # 不同类型之间休眠
+            time.sleep(2)
         
-        if all_dfs:
-            result = pd.concat(all_dfs, ignore_index=True)
-            self.logger.info(f"概念板块采集完成，共 {len(result)} 条记录")
-            return result
-        else:
-            return pd.DataFrame()
-    
-    def save_to_db(self, df, table_name, unique_keys):
-        """保存数据到数据库"""
-        if df.empty:
-            return 0
-        
-        rows = self.mysql_manager.batch_insert_or_update(
-            table_name=table_name,
-            df=df,
-            unique_keys=unique_keys
-        )
-        self.logger.info(f"保存 {table_name} {rows} 条记录")
-        return rows
+        self.logger.info("=== 数据采集完成 ===")
     
     def close(self):
         """关闭连接"""
@@ -411,54 +486,19 @@ class EastMoneyFetcher:
 
 
 # =====================================================
-# 测试入口
+# 主程序入口
 # =====================================================
 if __name__ == '__main__':
+    import sys
+    
     fetcher = EastMoneyFetcher()
     
-    # 测试资金流向
-    print("\n=== 测试资金流向 ===")
-    df = fetcher.fetch_moneyflow('601398', start_date='2026-03-01', end_date='2026-03-14')
-    if not df.empty:
-        print(f"获取到 {len(df)} 条记录")
-        print(df.head())
+    if len(sys.argv) > 1:
+        # 指定采集类型
+        data_type = sys.argv[1]
+        fetcher.batch_fetch_with_retry(data_type, max_retries=3)
     else:
-        print("无数据")
-    
-    # 测试北向资金
-    print("\n=== 测试北向资金 ===")
-    df = fetcher.fetch_north_moneyflow('601398', limit=30)
-    if not df.empty:
-        print(f"获取到 {len(df)} 条记录")
-        print(df.head())
-    else:
-        print("无数据")
-    
-    # 测试股东人数
-    print("\n=== 测试股东人数 ===")
-    df = fetcher.fetch_shareholder_count('601398', year=2025)
-    if not df.empty:
-        print(f"获取到 {len(df)} 条记录")
-        print(df.head())
-    else:
-        print("无数据")
-    
-    # 测试概念板块
-    print("\n=== 测试概念板块 ===")
-    df = fetcher.fetch_concept('601398')
-    if not df.empty:
-        print(f"获取到 {len(df)} 条记录")
-        print(df.to_string())
-    else:
-        print("无数据")
-    
-    # 测试分析师评级
-    print("\n=== 测试分析师评级 ===")
-    df = fetcher.fetch_analyst_rating('601398', limit=10)
-    if not df.empty:
-        print(f"获取到 {len(df)} 条记录")
-        print(df.head())
-    else:
-        print("无数据")
+        # 运行完整采集
+        fetcher.run_full_collection()
     
     fetcher.close()
