@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 Baostock 扩展工具类
-功能：资金流向、分析师预期、股东筹码数据采集
+功能：财务数据、业绩预告、成长能力等数据采集
+
+⚠️ 重要：所有 baostock 接口必须先查阅 docs/BAOSTOCK_API_REFERENCE.md 确认存在！
+不存在的接口：
+- query_money_flow_data() ❌
+- query_analyst_rating_data() ❌
+- query_shareholder_data() ❌
+- query_concept_data() ❌
 """
 
 import datetime
@@ -13,7 +20,24 @@ from src.utils.redis_tool import RedisUtil
 
 
 class BaostockExtension:
-    """Baostock 扩展数据采集器"""
+    """
+    Baostock 扩展数据采集器
+    
+    ✅ 支持的接口:
+    - query_cash_flow_data() - 现金流量表
+    - query_forecast_report() - 业绩预告
+    - query_profit_data() - 利润表
+    - query_balance_data() - 资产负债表
+    - query_growth_data() - 成长能力
+    - query_operation_data() - 运营能力
+    - query_dupont_data() - 杜邦分析
+    
+    ❌ 不支持的接口 (需其他数据源):
+    - 资金流向
+    - 分析师评级
+    - 股东人数
+    - 概念板块
+    """
     
     def __init__(self):
         self.logger = LogManager.get_logger("baostock_extension")
@@ -39,49 +63,142 @@ class BaostockExtension:
     # 资金流向数据采集
     # =====================================================
     
-    def fetch_cash_flow_data(self, stock_code, year=None):
+    def fetch_financial_data(self, stock_code, year=None, quarter=None):
         """
-        获取现金流量表数据（baostock 支持）
+        获取财务数据（利润表 + 资产负债表 + 现金流量表 + 成长能力 + 运营能力 + 杜邦分析）
         :param stock_code: 股票代码（带市场前缀，如 sh.601398）
         :param year: 年份
-        :return: DataFrame
+        :param quarter: 季度 (1-4)，None 表示全部季度
+        :return: dict of DataFrame
         """
         if not year:
             year = datetime.datetime.now().year
         
+        results = {}
+        
+        # 1. 利润表
         try:
-            rs = bs.query_cash_flow_data(code=stock_code, year=year)
+            if quarter:
+                rs = bs.query_profit_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_profit_data(code=stock_code, year=year)
             
-            if rs.error_code != '0':
-                return pd.DataFrame()
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['profit'] = df
+        except Exception as e:
+            self.logger.error(f"获取利润表异常 {stock_code}: {e}")
+        
+        # 2. 资产负债表
+        try:
+            if quarter:
+                rs = bs.query_balance_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_balance_data(code=stock_code, year=year)
             
-            data_list = []
-            while rs.next():
-                data_list.append(rs.get_row_data())
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['balance'] = df
+        except Exception as e:
+            self.logger.error(f"获取资产负债表异常 {stock_code}: {e}")
+        
+        # 3. 现金流量表
+        try:
+            if quarter:
+                rs = bs.query_cash_flow_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_cash_flow_data(code=stock_code, year=year)
             
-            if not data_list:
-                return pd.DataFrame()
-            
-            df = pd.DataFrame(data_list, columns=rs.fields)
-            df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
-            return df
-            
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['cash_flow'] = df
         except Exception as e:
             self.logger.error(f"获取现金流量表异常 {stock_code}: {e}")
-            return pd.DataFrame()
+        
+        # 4. 成长能力
+        try:
+            if quarter:
+                rs = bs.query_growth_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_growth_data(code=stock_code, year=year)
+            
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['growth'] = df
+        except Exception as e:
+            self.logger.error(f"获取成长能力异常 {stock_code}: {e}")
+        
+        # 5. 运营能力
+        try:
+            if quarter:
+                rs = bs.query_operation_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_operation_data(code=stock_code, year=year)
+            
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['operation'] = df
+        except Exception as e:
+            self.logger.error(f"获取运营能力异常 {stock_code}: {e}")
+        
+        # 6. 杜邦分析
+        try:
+            if quarter:
+                rs = bs.query_dupont_data(code=stock_code, year=year, quarter=quarter)
+            else:
+                rs = bs.query_dupont_data(code=stock_code, year=year)
+            
+            if rs.error_code == '0':
+                data_list = []
+                while rs.next():
+                    data_list.append(rs.get_row_data())
+                if data_list:
+                    df = pd.DataFrame(data_list, columns=rs.fields)
+                    df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
+                    results['dupont'] = df
+        except Exception as e:
+            self.logger.error(f"获取杜邦分析异常 {stock_code}: {e}")
+        
+        return results
     
-    def batch_fetch_cash_flow(self, stock_codes, year=None):
+    def batch_fetch_financial_data(self, stock_codes, year=None, quarter=None):
         """
-        批量获取现金流量表数据
+        批量获取财务数据（利润表 + 资产负债表 + 现金流量表 + 成长 + 运营 + 杜邦）
         :param stock_codes: 股票代码列表
         :param year: 年份
+        :param quarter: 季度 (1-4)
         """
         if not year:
             year = datetime.datetime.now().year
         
-        self.logger.info(f"开始批量获取现金流量表，共 {len(stock_codes)} 只股票")
+        self.logger.info(f"开始批量获取财务数据，共 {len(stock_codes)} 只股票")
         
-        total_inserted = 0
+        total_count = 0
         for i, stock_code in enumerate(stock_codes):
             if stock_code.startswith('6'):
                 full_code = f'sh.{stock_code}'
@@ -90,22 +207,23 @@ class BaostockExtension:
             else:
                 full_code = stock_code
             
-            df = self.fetch_cash_flow_data(full_code, year)
+            results = self.fetch_financial_data(full_code, year=year, quarter=quarter)
             
-            if not df.empty:
-                self.logger.debug(f"获取 {stock_code} 现金流量表成功，{len(df)} 条")
-                total_inserted += len(df)
+            for table_name, df in results.items():
+                if not df.empty:
+                    self.logger.debug(f"获取 {stock_code} {table_name} 成功，{len(df)} 条")
+                    total_count += len(df)
             
-            if (i + 1) % 100 == 0:
+            if (i + 1) % 50 == 0:
                 self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
             
             # 避免请求过快
-            if (i + 1) % 10 == 0:
+            if (i + 1) % 5 == 0:
                 import time
-                time.sleep(0.3)
+                time.sleep(0.5)
         
-        self.logger.info(f"现金流量表采集完成，共 {total_inserted} 条记录")
-        return total_inserted
+        self.logger.info(f"财务数据采集完成，共 {total_count} 条记录")
+        return total_count
     
     # =====================================================
     # 分析师预期数据采集
@@ -277,8 +395,12 @@ class BaostockExtension:
     # 综合数据采集入口
     # =====================================================
     
-    def run_full_collection(self, year=None):
-        """运行完整的数据采集流程"""
+    def run_full_collection(self, year=None, quarter=None):
+        """
+        运行完整的数据采集流程（财务数据 + 业绩预告）
+        :param year: 年份
+        :param quarter: 季度 (1-4)，None 表示全部季度
+        """
         if not year:
             year = datetime.datetime.now().year
         
@@ -298,16 +420,16 @@ class BaostockExtension:
         stock_codes = [r['stock_code'] for r in result]
         self.logger.info(f"待采集股票：{len(stock_codes)} 只")
         
-        # 1. 采集现金流量表
-        self.logger.info("\n[1/2] 采集现金流量表...")
-        cash_count = self.batch_fetch_cash_flow(stock_codes, year=year)
+        # 1. 采集财务数据（利润表 + 资产负债表 + 现金流量表 + 成长 + 运营 + 杜邦）
+        self.logger.info("\n[1/2] 采集财务数据...")
+        financial_count = self.batch_fetch_financial_data(stock_codes, year=year, quarter=quarter)
         
         # 2. 采集业绩预告
         self.logger.info("\n[2/2] 采集业绩预告...")
         forecast_count = self.batch_fetch_forecast(stock_codes, year=year)
         
         self.logger.info("\n=== 数据采集完成 ===")
-        self.logger.info(f"现金流量表：{cash_count} 条")
+        self.logger.info(f"财务数据：{financial_count} 条")
         self.logger.info(f"业绩预告：{forecast_count} 条")
     
     def close(self):
@@ -322,13 +444,15 @@ class BaostockExtension:
 if __name__ == '__main__':
     ext = BaostockExtension()
     
-    # 测试单只股票
-    print("测试单只股票现金流量表...")
-    df = ext.fetch_cash_flow_data('sh.601398', 2025)
-    if not df.empty:
-        print(df.head())
-    else:
-        print("无数据")
+    # 测试单只股票财务数据
+    print("测试单只股票财务数据...")
+    results = ext.fetch_financial_data('sh.601398', year=2025)
+    for table_name, df in results.items():
+        if not df.empty:
+            print(f"\n{table_name}: {len(df)} 条")
+            print(df.head(2))
+        else:
+            print(f"\n{table_name}: 无数据")
     
     # 运行完整采集
     # ext.run_full_collection(year=2025)
