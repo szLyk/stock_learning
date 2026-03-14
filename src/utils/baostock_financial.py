@@ -85,18 +85,18 @@ class BaostockFinancialFetcher:
             df = pd.DataFrame(data_list, columns=rs.fields)
             
             # 重命名和清洗
-            # 动态重命名（处理字段缺失）
+            # 动态重命名（处理字段缺失和大小写问题）
             rename_map = {
                 'code': 'stock_code',
                 'pubDate': 'publish_date',
                 'statDate': 'statistic_date'
             }
             
-            # 检查并映射存在的字段
+            # 检查并映射存在的字段（处理大小写）
             field_mapping = {
                 'roeAvg': 'roe_avg', 'npMargin': 'np_margin', 'gpMargin': 'gp_margin',
                 'netProfit': 'net_profit', 'epsTTM': 'eps_ttm',
-                'mbRevenue': 'mb_revenue', 'totalShare': 'total_share', 'liqaShare': 'liqa_share'
+                'MBRevenue': 'mb_revenue', 'totalShare': 'total_share', 'liqaShare': 'liqa_share'
             }
             
             for src, dst in field_mapping.items():
