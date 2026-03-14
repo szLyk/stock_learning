@@ -16,12 +16,12 @@ class BaostockExtension:
     """Baostock 扩展数据采集器"""
     
     def __init__(self):
+        self.logger = LogManager.get_logger("baostock_extension")
+        self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
         self.login()
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
         self.redis_manager = RedisUtil() if RedisUtil else None
-        self.logger = LogManager.get_logger("baostock_extension")
-        self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
     
     def login(self):
         """登录 baostock"""
@@ -39,24 +39,20 @@ class BaostockExtension:
     # 资金流向数据采集
     # =====================================================
     
-    def fetch_capital_flow_data(self, stock_code, start_date=None, end_date=None):
+    def fetch_cash_flow_data(self, stock_code, year=None):
         """
-        获取资金流向数据
+        获取现金流量表数据（baostock 支持）
         :param stock_code: 股票代码（带市场前缀，如 sh.601398）
-        :param start_date: 开始日期
-        :param end_date: 结束日期
+        :param year: 年份
         :return: DataFrame
         """
-        if not start_date:
-            start_date = '2020-01-01'
-        if not end_date:
-            end_date = self.now_date
+        if not year:
+            year = datetime.datetime.now().year
         
         try:
-            rs = bs.query_money_flow_data(stock_code=stock_code, start_date=start_date, end_date=end_date)
+            rs = bs.query_cash_flow_data(code=stock_code, year=year)
             
             if rs.error_code != '0':
-                self.logger.warning(f"获取资金流向失败 {stock_code}: {rs.error_msg}")
                 return pd.DataFrame()
             
             data_list = []
@@ -67,41 +63,26 @@ class BaostockExtension:
                 return pd.DataFrame()
             
             df = pd.DataFrame(data_list, columns=rs.fields)
-            
-            # 重命名字段映射到数据库
-            df = df.rename(columns={
-                'code': 'stock_code',
-                'date': 'stock_date',
-                'mainNetIn': 'main_net_in',
-                'smNetIn': 'sm_net_in',
-                'mmNetIn': 'mm_net_in',
-                'bmNetIn': 'bm_net_in'
-            })
-            
-            # 数据清洗
-            df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:] if x else x)
-            numeric_cols = ['main_net_in', 'sm_net_in', 'mm_net_in', 'bm_net_in']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-            
+            df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
             return df
             
         except Exception as e:
-            self.logger.error(f"获取资金流向异常 {stock_code}: {e}")
+            self.logger.error(f"获取现金流量表异常 {stock_code}: {e}")
             return pd.DataFrame()
     
-    def batch_fetch_capital_flow(self, stock_codes, start_date=None):
+    def batch_fetch_cash_flow(self, stock_codes, year=None):
         """
-        批量获取资金流向数据
+        批量获取现金流量表数据
         :param stock_codes: 股票代码列表
-        :param start_date: 开始日期
+        :param year: 年份
         """
-        self.logger.info(f"开始批量获取资金流向，共 {len(stock_codes)} 只股票")
+        if not year:
+            year = datetime.datetime.now().year
+        
+        self.logger.info(f"开始批量获取现金流量表，共 {len(stock_codes)} 只股票")
         
         total_inserted = 0
         for i, stock_code in enumerate(stock_codes):
-            # 添加市场前缀
             if stock_code.startswith('6'):
                 full_code = f'sh.{stock_code}'
             elif stock_code.startswith('0') or stock_code.startswith('3'):
@@ -109,47 +90,39 @@ class BaostockExtension:
             else:
                 full_code = stock_code
             
-            df = self.fetch_capital_flow_data(full_code, start_date)
+            df = self.fetch_cash_flow_data(full_code, year)
             
             if not df.empty:
-                # 入库
-                rows = self.mysql_manager.batch_insert_or_update(
-                    table_name='stock_capital_flow',
-                    df=df,
-                    unique_keys=['stock_code', 'stock_date']
-                )
-                total_inserted += rows
-                
-                if (i + 1) % 100 == 0:
-                    self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
+                self.logger.debug(f"获取 {stock_code} 现金流量表成功，{len(df)} 条")
+                total_inserted += len(df)
+            
+            if (i + 1) % 100 == 0:
+                self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
             
             # 避免请求过快
             if (i + 1) % 10 == 0:
                 import time
-                time.sleep(0.5)
+                time.sleep(0.3)
         
-        self.logger.info(f"资金流向采集完成，共插入 {total_inserted} 条记录")
+        self.logger.info(f"现金流量表采集完成，共 {total_inserted} 条记录")
         return total_inserted
     
     # =====================================================
     # 分析师预期数据采集
     # =====================================================
     
-    def fetch_forecast_data(self, stock_code, start_date=None, end_date=None):
+    def fetch_forecast_report(self, stock_code, year=None):
         """
-        获取业绩预告数据
+        获取业绩预告报告（baostock 支持）
         :param stock_code: 股票代码
-        :param start_date: 开始日期
-        :param end_date: 结束日期
+        :param year: 年份
         :return: DataFrame
         """
-        if not start_date:
-            start_date = '2020-01-01'
-        if not end_date:
-            end_date = self.now_date
+        if not year:
+            year = datetime.datetime.now().year
         
         try:
-            rs = bs.query_forecast_data(stock_code=stock_code, start_date=start_date, end_date=end_date)
+            rs = bs.query_forecast_report(code=stock_code, year=year)
             
             if rs.error_code != '0':
                 return pd.DataFrame()
@@ -162,17 +135,7 @@ class BaostockExtension:
                 return pd.DataFrame()
             
             df = pd.DataFrame(data_list, columns=rs.fields)
-            
-            # 重命名
-            df = df.rename(columns={
-                'code': 'stock_code',
-                'pubDate': 'publish_date',
-                'type': 'forecast_type',
-                'content': 'forecast_content'
-            })
-            
-            df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:] if x else x)
-            
+            df['stock_code'] = df['code'].apply(lambda x: x[-6:] if x else x)
             return df
             
         except Exception as e:
@@ -242,13 +205,14 @@ class BaostockExtension:
             self.logger.error(f"获取分析师评级异常 {stock_code}: {e}")
             return pd.DataFrame()
     
-    def batch_fetch_analyst_data(self, stock_codes):
-        """批量获取分析师数据"""
-        self.logger.info(f"开始批量获取分析师数据，共 {len(stock_codes)} 只股票")
+    def batch_fetch_forecast(self, stock_codes, year=None):
+        """批量获取业绩预告数据"""
+        if not year:
+            year = datetime.datetime.now().year
         
-        total_forecast = 0
-        total_rating = 0
+        self.logger.info(f"开始批量获取业绩预告，共 {len(stock_codes)} 只股票")
         
+        total_count = 0
         for i, stock_code in enumerate(stock_codes):
             if stock_code.startswith('6'):
                 full_code = f'sh.{stock_code}'
@@ -257,36 +221,19 @@ class BaostockExtension:
             else:
                 full_code = stock_code
             
-            # 业绩预告
-            forecast_df = self.fetch_forecast_data(full_code)
+            forecast_df = self.fetch_forecast_report(full_code, year)
             if not forecast_df.empty:
-                rows = self.mysql_manager.batch_insert_or_update(
-                    table_name='stock_analyst_expectation',
-                    df=forecast_df,
-                    unique_keys=['stock_code', 'publish_date']
-                )
-                total_forecast += rows
+                total_count += len(forecast_df)
             
-            # 分析师评级
-            rating_df = self.fetch_analyst_rating(full_code)
-            if not rating_df.empty:
-                rows = self.mysql_manager.batch_insert_or_update(
-                    table_name='stock_analyst_expectation',
-                    df=rating_df,
-                    unique_keys=['stock_code', 'publish_date']
-                )
-                total_rating += rows
-            
-            if (i + 1) % 50 == 0:
+            if (i + 1) % 100 == 0:
                 self.logger.info(f"已处理 {i+1}/{len(stock_codes)} 只股票")
             
-            # 避免请求过快
-            if (i + 1) % 5 == 0:
+            if (i + 1) % 10 == 0:
                 import time
-                time.sleep(1)
+                time.sleep(0.3)
         
-        self.logger.info(f"分析师数据采集完成：业绩预告 {total_forecast} 条，评级 {total_rating} 条")
-        return total_forecast, total_rating
+        self.logger.info(f"业绩预告采集完成：共 {total_count} 条")
+        return total_count
     
     # =====================================================
     # 股东筹码数据采集
@@ -330,8 +277,11 @@ class BaostockExtension:
     # 综合数据采集入口
     # =====================================================
     
-    def run_full_collection(self):
+    def run_full_collection(self, year=None):
         """运行完整的数据采集流程"""
+        if not year:
+            year = datetime.datetime.now().year
+        
         self.logger.info("=== 开始扩展数据采集 ===")
         
         # 获取待采集的股票列表
@@ -348,18 +298,17 @@ class BaostockExtension:
         stock_codes = [r['stock_code'] for r in result]
         self.logger.info(f"待采集股票：{len(stock_codes)} 只")
         
-        # 1. 采集资金流向
-        self.logger.info("\n[1/2] 采集资金流向...")
-        capital_count = self.batch_fetch_capital_flow(stock_codes, start_date='2024-01-01')
+        # 1. 采集现金流量表
+        self.logger.info("\n[1/2] 采集现金流量表...")
+        cash_count = self.batch_fetch_cash_flow(stock_codes, year=year)
         
-        # 2. 采集分析师数据
-        self.logger.info("\n[2/2] 采集分析师数据...")
-        forecast_count, rating_count = self.batch_fetch_analyst_data(stock_codes)
+        # 2. 采集业绩预告
+        self.logger.info("\n[2/2] 采集业绩预告...")
+        forecast_count = self.batch_fetch_forecast(stock_codes, year=year)
         
         self.logger.info("\n=== 数据采集完成 ===")
-        self.logger.info(f"资金流向：{capital_count} 条")
+        self.logger.info(f"现金流量表：{cash_count} 条")
         self.logger.info(f"业绩预告：{forecast_count} 条")
-        self.logger.info(f"分析师评级：{rating_count} 条")
     
     def close(self):
         """关闭连接"""
@@ -374,12 +323,14 @@ if __name__ == '__main__':
     ext = BaostockExtension()
     
     # 测试单只股票
-    print("测试单只股票资金流向...")
-    df = ext.fetch_capital_flow_data('sh.601398', '2025-01-01')
+    print("测试单只股票现金流量表...")
+    df = ext.fetch_cash_flow_data('sh.601398', 2025)
     if not df.empty:
         print(df.head())
+    else:
+        print("无数据")
     
     # 运行完整采集
-    # ext.run_full_collection()
+    # ext.run_full_collection(year=2025)
     
     ext.close()
