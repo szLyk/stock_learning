@@ -85,19 +85,25 @@ class BaostockFinancialFetcher:
             df = pd.DataFrame(data_list, columns=rs.fields)
             
             # 重命名和清洗
-            df = df.rename(columns={
+            # 动态重命名（处理字段缺失）
+            rename_map = {
                 'code': 'stock_code',
                 'pubDate': 'publish_date',
-                'statDate': 'statistic_date',
-                'roeAvg': 'roe_avg',
-                'npMargin': 'np_margin',
-                'gpMargin': 'gp_margin',
-                'netProfit': 'net_profit',
-                'epsTTM': 'eps_ttm',
-                'mbRevenue': 'mb_revenue',
-                'totalShare': 'total_share',
-                'liqaShare': 'liqa_share'
-            })
+                'statDate': 'statistic_date'
+            }
+            
+            # 检查并映射存在的字段
+            field_mapping = {
+                'roeAvg': 'roe_avg', 'npMargin': 'np_margin', 'gpMargin': 'gp_margin',
+                'netProfit': 'net_profit', 'epsTTM': 'eps_ttm',
+                'mbRevenue': 'mb_revenue', 'totalShare': 'total_share', 'liqaShare': 'liqa_share'
+            }
+            
+            for src, dst in field_mapping.items():
+                if src in df.columns:
+                    rename_map[src] = dst
+            
+            df = df.rename(columns=rename_map)
             
             df['stock_code'] = df['stock_code'].apply(lambda x: x[-6:] if x else x)
             df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
