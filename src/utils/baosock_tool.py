@@ -257,6 +257,12 @@ class BaostockFetcher:
 
     # 更新股票基础信息
     def update_stock_basic(self):
+        """
+        更新股票基础信息，并同步到新的记录表
+        - update_stock_record (旧表)
+        - stock_performance_update_record (财务数据记录表)
+        - update_eastmoney_record (东方财富数据记录表)
+        """
         # 获取行业分类数据
         rs = bs.query_stock_basic()
         data_list = []
@@ -279,17 +285,54 @@ class BaostockFetcher:
         table_name = 'stock_basic'
         # 创建 SQLAlchemy 引擎
         self.mysql_manager.batch_insert_or_update(table_name, df, ['stock_code'])
-        # 过滤掉df中状态stock_type不为1的数据 建立一个新的数据集
+        
+        # 过滤掉 df 中状态 stock_type 不为 1 的数据 建立一个新的数据集
         stock_record = df[df['stock_type'] == '1']
-        self.mysql_manager.batch_insert_or_update('update_stock_record',
-                                                  stock_record[['stock_code', 'stock_name', 'market_type']],
-                                                  ['stock_code'])
+        
+        # 移除 stock_name 为空的记录
+        stock_record = stock_record.dropna(subset=['stock_name'])
+        stock_record = stock_record[stock_record['stock_name'].str.strip() != '']
+        
+        self.logger.info(f"有效股票记录：{len(stock_record)} 只（已移除无名称股票）")
+        
+        if len(stock_record) > 0:
+            self.mysql_manager.batch_insert_or_update('update_stock_record',
+                                                      stock_record[['stock_code', 'stock_name', 'market_type']],
+                                                      ['stock_code'])
+            
+            # 同步到新记录表 stock_performance_update_record
+            for _, row in stock_record.iterrows():
+                self.mysql_manager.execute("""
+                    INSERT INTO stock_performance_update_record (stock_code, stock_name, market_type)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        stock_name = VALUES(stock_name),
+                        market_type = VALUES(market_type)
+                """, (row['stock_code'], row['stock_name'], row['market_type']))
+            
+            # 同步到新记录表 update_eastmoney_record
+            for _, row in stock_record.iterrows():
+                self.mysql_manager.execute("""
+                    INSERT INTO update_eastmoney_record (stock_code, stock_name, market_type)
+                    VALUES (%s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        stock_name = VALUES(stock_name),
+                        market_type = VALUES(market_type)
+                """, (row['stock_code'], row['stock_name'], row['market_type']))
+        
         stock_record = df[df['stock_type'].isin(['2', '5'])]
-        self.mysql_manager.batch_insert_or_update('update_index_stock_record',
-                                                  stock_record[
-                                                      ['stock_code', 'stock_name', 'market_type', 'stock_type']],
-                                                  ['stock_code'])
+        stock_record = stock_record.dropna(subset=['stock_name'])
+        stock_record = stock_record[stock_record['stock_name'].str.strip() != '']
+        
+        if len(stock_record) > 0:
+            self.mysql_manager.batch_insert_or_update('update_index_stock_record',
+                                                      stock_record[
+                                                          ['stock_code', 'stock_name', 'market_type', 'stock_type']],
+                                                      ['stock_code'])
+        
+        self.logger.info(f"股票基础信息更新完成，共 {len(df)} 只股票")
         return df
+
 
     def update_stock_record(self, stock_code, update_column, update_date, update_record_table='update_stock_record'):
         sql = f"UPDATE {update_record_table} SET {update_column} = %s WHERE stock_code = %s"
