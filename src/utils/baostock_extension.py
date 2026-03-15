@@ -561,6 +561,10 @@ class BaostockExtension:
                         if not target_table:
                             continue
                         
+                        # 删除不需要的列（code 列）
+                        if 'code' in df.columns:
+                            df = df.drop(columns=['code'])
+                        
                         # 检查表是否存在
                         check_query = """
                         SELECT table_name FROM information_schema.tables 
