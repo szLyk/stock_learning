@@ -36,7 +36,7 @@ fi
 
 # 启动执行器
 echo "启动 XXL-JOB 执行器..."
-nohup python3 ${XXLJOB_DIR}/executor_server.py > ${LOG_DIR}/executor.log 2>&1 &
+nohup python3 ${XXLJOB_DIR}/executor_server_simple.py > ${LOG_DIR}/executor.log 2>&1 &
 
 # 保存 PID
 echo $! > ${PID_FILE}

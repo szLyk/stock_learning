@@ -6,7 +6,7 @@ XXL-JOB 执行器配置
 import os
 
 # XXL-JOB 调度中心地址
-XXL_JOB_ADMIN_ADDRESS = os.getenv('XXL_JOB_ADMIN_ADDRESS', 'http://localhost:8080/xxl-job-admin')
+XXL_JOB_ADMIN_ADDRESS = os.getenv('XXL_JOB_ADMIN_ADDRESS', 'http://xxl-job-admin:8080/xxl-job-admin')
 
 # 执行器配置
 EXECUTOR_CONFIG = {
