@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 XXL-JOB 执行器服务器（简化版 - 独立运行）
@@ -11,6 +12,8 @@ import socket
 import threading
 import datetime
 import traceback
+import urllib.request
+import urllib.error
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # 工作目录
@@ -133,6 +136,17 @@ class ExecutorHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         log('INFO', f'HTTP: {args[0]}')
     
+    def do_GET(self):
+        """处理 GET 请求（健康检查）"""
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'status': 'UP', 'timestamp': datetime.datetime.now().isoformat()}).encode())
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8') if content_length else '{}'
@@ -212,24 +226,60 @@ def get_local_ip():
         return '127.0.0.1'
 
 
+def registry_to_admin():
+    """注册到 XXL-JOB Admin（使用数据库直连方式）"""
+    try:
+        # 尝试直接连接 XXL-JOB 的数据库
+        import pymysql
+        local_ip = get_local_ip()
+        address = f'{local_ip}:{EXECUTOR_PORT}'
+        
+        # XXL-JOB Admin 的数据库配置（从环境变量或默认）
+        admin_db_host = os.getenv('XXL_JOB_DB_HOST', 'mysql')
+        admin_db_port = int(os.getenv('XXL_JOB_DB_PORT', 3306))
+        admin_db_user = os.getenv('XXL_JOB_DB_USER', 'root')
+        admin_db_password = os.getenv('XXL_JOB_DB_PASSWORD', '123456')
+        admin_db_name = os.getenv('XXL_JOB_DB_NAME', 'xxl_job')
+        
+        conn = pymysql.connect(
+            host=admin_db_host,
+            port=admin_db_port,
+            user=admin_db_user,
+            password=admin_db_password,
+            database=admin_db_name,
+            charset='utf8mb4'
+        )
+        
+        try:
+            cursor = conn.cursor()
+            
+            # 插入/更新执行器注册信息
+            sql = """
+            INSERT INTO xxl_job_registry (registry_group, registry_key, registry_value, update_time)
+            VALUES ('EXECUTOR', %s, %s, NOW())
+            ON DUPLICATE KEY UPDATE registry_value=%s, update_time=NOW()
+            """
+            cursor.execute(sql, (EXECUTOR_APP_NAME, address, address))
+            conn.commit()
+            
+            log('INFO', f'✅ 注册到 Admin 数据库：{address}')
+            return True
+        except Exception as e:
+            log('ERROR', f'数据库注册失败：{e}')
+            return False
+        finally:
+            conn.close()
+    except Exception as e:
+        log('WARNING', f'无法连接 Admin 数据库：{e}')
+        return False
+
+
 def heartbeat_loop():
-    """心跳注册"""
-    import urllib.request
+    """心跳注册（每 30 秒）"""
     while True:
         time.sleep(30)
         try:
-            local_ip = get_local_ip()
-            data = json.dumps({
-                'appName': EXECUTOR_APP_NAME,
-                'address': f'{local_ip}:{EXECUTOR_PORT}'
-            }).encode()
-            req = urllib.request.Request(
-                f'{XXL_JOB_ADMIN_ADDRESS}/registry',
-                data=data,
-                headers={'Content-Type': 'application/json'}
-            )
-            urllib.request.urlopen(req, timeout=5)
-            log('INFO', f'心跳注册：{local_ip}:{EXECUTOR_PORT}')
+            registry_to_admin()
         except Exception as e:
             log('WARNING', f'心跳失败：{e}')
 
@@ -246,9 +296,12 @@ if __name__ == '__main__':
     log('INFO', f'Admin: {XXL_JOB_ADMIN_ADDRESS}')
     log('INFO', '=' * 50)
     
+    # 立即注册一次
+    registry_to_admin()
+    time.sleep(2)
+    
     # 启动心跳
     threading.Thread(target=heartbeat_loop, daemon=True).start()
-    time.sleep(3)
     
     # 启动 HTTP 服务器
     server = HTTPServer(('0.0.0.0', EXECUTOR_PORT), ExecutorHandler)

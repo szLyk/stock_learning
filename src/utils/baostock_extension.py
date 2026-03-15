@@ -17,6 +17,7 @@ import baostock as bs
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
 from src.utils.redis_tool import RedisUtil
+import datetime
 
 
 class BaostockExtension:
@@ -46,6 +47,55 @@ class BaostockExtension:
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
         self.redis_manager = RedisUtil() if RedisUtil else None
+    
+    # =====================================================
+    # Redis 断点续传机制
+    # =====================================================
+    
+    def get_pending_stocks(self, data_type='extension'):
+        """从 Redis 或数据库获取待采集股票（支持断点续传）"""
+        if self.redis_manager is None:
+            return self._get_pending_stocks_from_db()
+        
+        redis_key = f"baostock:{data_type}"
+        
+        # 1. 优先从 Redis 获取待处理股票
+        pending = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
+        
+        if not pending:
+            # 2. Redis 为空，从数据库获取并初始化
+            stocks_df = self._get_pending_stocks_from_db()
+            if not stocks_df.empty:
+                stock_list = stocks_df['stock_code'].tolist()
+                self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
+                self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票")
+            return stocks_df
+        
+        # 3. Redis 中有待处理股票
+        return pending
+    
+    def _get_pending_stocks_from_db(self):
+        """从数据库获取待采集股票"""
+        sql = """
+        SELECT stock_code FROM stock.update_stock_record 
+        WHERE stock_code IS NOT NULL
+        """
+        result = self.mysql_manager.query_all(sql)
+        if not result:
+            self.logger.warning("未找到待采集股票")
+            return None
+        
+        df = pd.DataFrame(result)
+        df['stock_code'] = 'sh.' + df['stock_code']  # 默认加上市场前缀
+        return df
+    
+    def mark_as_processed(self, stock_code, data_type='extension'):
+        """标记股票为已处理（从 Redis 移除）"""
+        if self.redis_manager is None:
+            return
+        
+        redis_key = f"baostock:{data_type}"
+        self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
     
     def login(self):
         """登录 baostock"""
@@ -397,39 +447,57 @@ class BaostockExtension:
     
     def run_full_collection(self, year=None, quarter=None):
         """
-        运行完整的数据采集流程（财务数据 + 业绩预告）
+        运行完整的数据采集流程（财务数据 + 业绩预告，支持 Redis 断点续传）
         :param year: 年份
         :param quarter: 季度 (1-4)，None 表示全部季度
         """
         if not year:
             year = datetime.datetime.now().year
         
-        self.logger.info("=== 开始扩展数据采集 ===")
+        self.logger.info("=== 开始扩展数据采集（支持断点续传）===")
         
-        # 获取待采集的股票列表
-        sql = """
-        SELECT stock_code FROM stock.update_stock_record 
-        WHERE stock_code IS NOT NULL
-        """
-        result = self.mysql_manager.query_all(sql)
-        if not result:
+        # 获取待采集的股票列表（从 Redis 或数据库）
+        stocks_df = self.get_pending_stocks('extension')
+        
+        if stocks_df is None or stocks_df.empty:
             self.logger.warning("未找到待采集股票")
             return
         
-        stock_codes = [r['stock_code'] for r in result]
-        self.logger.info(f"待采集股票：{len(stock_codes)} 只")
+        stock_list = stocks_df['stock_code'].tolist()
+        total = len(stock_list)
+        self.logger.info(f"待采集股票：{total} 只")
+        
+        success_count = 0
         
         # 1. 采集财务数据（利润表 + 资产负债表 + 现金流量表 + 成长 + 运营 + 杜邦）
         self.logger.info("\n[1/2] 采集财务数据...")
-        financial_count = self.batch_fetch_financial_data(stock_codes, year=year, quarter=quarter)
+        for i, stock_code in enumerate(stock_list, 1):
+            try:
+                results = self.fetch_financial_data(stock_code, year=year, quarter=quarter)
+                if any(not df.empty for df in results.values()):
+                    success_count += 1
+                    self.mark_as_processed(stock_code, 'extension')
+                
+                if i % 10 == 0:
+                    self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
+            except Exception as e:
+                self.logger.error(f"{stock_code} 采集失败：{e}")
+        
+        self.logger.info(f"财务数据采集完成：{success_count}/{total}")
         
         # 2. 采集业绩预告
         self.logger.info("\n[2/2] 采集业绩预告...")
-        forecast_count = self.batch_fetch_forecast(stock_codes, year=year)
+        forecast_success = 0
+        for i, stock_code in enumerate(stock_list, 1):
+            try:
+                df = self.fetch_forecast_report(stock_code, year=year)
+                if not df.empty:
+                    forecast_success += 1
+            except Exception as e:
+                self.logger.error(f"{stock_code} 业绩预告采集失败：{e}")
         
+        self.logger.info(f"业绩预告采集完成：{forecast_success}/{total}")
         self.logger.info("\n=== 数据采集完成 ===")
-        self.logger.info(f"财务数据：{financial_count} 条")
-        self.logger.info(f"业绩预告：{forecast_count} 条")
     
     def close(self):
         """关闭连接"""
