@@ -523,59 +523,100 @@ class BaostockFinancialFetcher:
         self.logger.info(f"=== 开始采集 {data_type} ===")
         retry_count = 0
         while retry_count <= max_retries:
-            stocks_df = self.get_pending_stocks(data_type)
-            if not stocks_df:
+            result = self.get_pending_stocks(data_type)
+            if not result:
                 self.logger.info(f"✅ {data_type} 采集完成" if retry_count == 0 else f"✅ {data_type} 补采完成")
                 return
-            total = len(stocks_df)
-            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
-            success_count = 0
             
-            for i, row in stocks_df.iterrows():
-                stock_code = row['stock_code']
-                last_update_date = row.get('last_update_date', '1990-01-01')
+            # 统一处理：可能是 list（Redis）或 DataFrame（数据库）
+            if isinstance(result, list):
+                stock_list = result
+                # Redis 返回的是带前缀的代码，直接使用
+                self.logger.info(f"第 {retry_count + 1} 轮：共 {len(stock_list)} 只股票待处理（Redis 断点续传）")
                 
-                try:
-                    # 根据上次更新日期，计算需要采集的年份
-                    years_to_fetch = self._get_years_to_fetch(last_update_date)
-                    
-                    if not years_to_fetch:
-                        # 不需要采集新数据
-                        success_count += 1
-                        continue
-                    
-                    rows_inserted = 0
-                    latest_date = None
-                    
-                    for year in years_to_fetch:
-                        df = fetch_func(stock_code, year)
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update(
-                                table_name, df, 
-                                ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
-                                else ['stock_code', 'publish_date'] if 'publish_date' in df.columns 
-                                else ['stock_code', 'announce_date']
-                            )
-                            rows_inserted += len(df)
-                            if latest_date is None or df[date_field].max() > latest_date:
-                                latest_date = df[date_field].max()
-                        time.sleep(0.2)
-                    
-                    if rows_inserted > 0:
-                        success_count += 1
-                        self.update_record(stock_code, data_type, latest_date)
-                        self.mark_as_processed(stock_code, data_type)
-                    elif latest_date:
-                        # 即使没有新数据，也更新记录（避免重复检查）
-                        self.update_record(stock_code, data_type, latest_date)
-                    
-                    if (i + 1) % 50 == 0:
-                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
-                    if (i + 1) % 10 == 0:
-                        time.sleep(0.3)
+                for i, stock_code in enumerate(stock_list):
+                    try:
+                        years_to_fetch = [self.current_year, self.current_year - 1]  # Redis 模式下简化处理
+                        rows_inserted = 0
+                        latest_date = None
                         
-                except Exception as e:
-                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+                        for year in years_to_fetch:
+                            df = fetch_func(stock_code, year)
+                            if not df.empty:
+                                self.mysql_manager.batch_insert_or_update(
+                                    table_name, df, 
+                                    ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
+                                    else ['stock_code', 'publish_date'] if 'publish_date' in df.columns 
+                                    else ['stock_code', 'announce_date']
+                                )
+                                rows_inserted += len(df)
+                                if latest_date is None or df[date_field].max() > latest_date:
+                                    latest_date = df[date_field].max()
+                            time.sleep(0.2)
+                        
+                        if rows_inserted > 0:
+                            success_count += 1
+                            self.update_record(stock_code, data_type, latest_date)
+                            self.mark_as_processed(stock_code, data_type)
+                        
+                        if (i + 1) % 50 == 0:
+                            self.logger.info(f"已处理 {i+1}/{len(stock_list)}，成功 {success_count}")
+                        if (i + 1) % 10 == 0:
+                            time.sleep(0.3)
+                    except Exception as e:
+                        self.logger.error(f"处理 {stock_code} 失败：{e}")
+            else:
+                # DataFrame 模式（数据库）
+                stocks_df = result
+                total = len(stocks_df)
+                self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理（数据库初始化）")
+                success_count = 0
+                
+                for i, row in stocks_df.iterrows():
+                    stock_code = row['stock_code']
+                    last_update_date = row.get('last_update_date', '1990-01-01')
+                    
+                    try:
+                        # 根据上次更新日期，计算需要采集的年份
+                        years_to_fetch = self._get_years_to_fetch(last_update_date)
+                        
+                        if not years_to_fetch:
+                            # 不需要采集新数据
+                            success_count += 1
+                            continue
+                        
+                        rows_inserted = 0
+                        latest_date = None
+                        
+                        for year in years_to_fetch:
+                            df = fetch_func(stock_code, year)
+                            if not df.empty:
+                                self.mysql_manager.batch_insert_or_update(
+                                    table_name, df, 
+                                    ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
+                                    else ['stock_code', 'publish_date'] if 'publish_date' in df.columns 
+                                    else ['stock_code', 'announce_date']
+                                )
+                                rows_inserted += len(df)
+                                if latest_date is None or df[date_field].max() > latest_date:
+                                    latest_date = df[date_field].max()
+                            time.sleep(0.2)
+                        
+                        if rows_inserted > 0:
+                            success_count += 1
+                            self.update_record(stock_code, data_type, latest_date)
+                            self.mark_as_processed(stock_code, data_type)
+                        elif latest_date:
+                            # 即使没有新数据，也更新记录（避免重复检查）
+                            self.update_record(stock_code, data_type, latest_date)
+                        
+                        if (i + 1) % 50 == 0:
+                            self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                        if (i + 1) % 10 == 0:
+                            time.sleep(0.3)
+                            
+                    except Exception as e:
+                        self.logger.error(f"处理 {stock_code} 失败：{e}")
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             

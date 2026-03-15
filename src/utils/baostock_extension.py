@@ -465,13 +465,19 @@ class BaostockExtension:
         self.logger.info("=== 开始扩展数据采集（支持断点续传）===")
         
         # 获取待采集的股票列表（从 Redis 或数据库）
-        stocks_df = self.get_pending_stocks('extension')
+        result = self.get_pending_stocks('extension')
         
-        if stocks_df is None or stocks_df.empty:
+        # 统一处理：可能是 list（Redis）或 DataFrame（数据库）
+        if result is None:
             self.logger.warning("未找到待采集股票")
             return
         
-        stock_list = stocks_df['stock_code'].tolist()
+        if isinstance(result, list):
+            stock_list = result
+        else:
+            # DataFrame
+            stock_list = result['stock_code'].tolist()
+        
         total = len(stock_list)
         self.logger.info(f"待采集股票：{total} 只")
         
