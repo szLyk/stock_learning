@@ -121,6 +121,16 @@ class BaostockExtension:
         bs.logout()
         self.logger.info("Baostock 已登出")
     
+    def _get_stock_code(self, code_with_market):
+        """
+        提取纯股票代码（去除市场前缀）
+        :param code_with_market: 带市场前缀的代码，如 sh.601398
+        :return: 纯股票代码，如 601398
+        """
+        if '.' in code_with_market:
+            return code_with_market.split('.')[-1]
+        return code_with_market
+    
     # =====================================================
     # 资金流向数据采集
     # =====================================================
