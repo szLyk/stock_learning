@@ -531,12 +531,52 @@ class BaostockFinancialFetcher:
             # 统一处理：可能是 list（Redis）或 DataFrame（数据库）
             if isinstance(result, list):
                 stock_list = result
-                # Redis 返回的是带前缀的代码，直接使用
+                # Redis 返回的是带前缀的代码，需要从记录表获取上次更新时间
                 self.logger.info(f"第 {retry_count + 1} 轮：共 {len(stock_list)} 只股票待处理（Redis 断点续传）")
+                
+                # 从记录表获取每只股票的上次更新时间
+                date_column_map = {
+                    'profit': 'update_profit_date',
+                    'balance': 'update_balance_date',
+                    'cashflow': 'update_cashflow_date',
+                    'growth': 'update_growth_date',
+                    'operation': 'update_operation_date',
+                    'dupont': 'update_dupont_date',
+                    'forecast': 'update_forecast_date',
+                    'dividend': 'update_dividend_date'
+                }
+                date_column = date_column_map.get(data_type, 'update_profit_date')
+                
+                # 批量查询记录表
+                stock_codes = [self._get_stock_code(sc) for sc in stock_list]
+                placeholders = ','.join(['%s'] * len(stock_codes))
+                query = f"""
+                SELECT stock_code, {date_column} as last_update_date 
+                FROM stock_performance_update_record 
+                WHERE stock_code IN ({placeholders})
+                """
+                record_result = self.mysql_manager.query_all(query, stock_codes)
+                record_dict = {r['stock_code']: r['last_update_date'] for r in record_result}
                 
                 for i, stock_code in enumerate(stock_list):
                     try:
-                        years_to_fetch = [self.current_year, self.current_year - 1]  # Redis 模式下简化处理
+                        # 获取纯股票代码
+                        pure_code = self._get_stock_code(stock_code)
+                        
+                        # 从记录表获取上次更新时间，如果没有则为 1990-01-01
+                        last_update_date = record_dict.get(pure_code, None)
+                        if not last_update_date or last_update_date == '1990-01-01':
+                            # 首次采集，采集从 2007 年到当前年的所有数据
+                            years_to_fetch = list(range(2007, self.current_year + 1))
+                            self.logger.debug(f"{stock_code}: 首次采集，年份范围 2007-{self.current_year}")
+                        else:
+                            # 根据上次更新日期计算需要采集的年份
+                            years_to_fetch = self._get_years_to_fetch(last_update_date)
+                            if not years_to_fetch:
+                                # 不需要采集新数据
+                                self.mark_as_processed(stock_code, data_type)
+                                continue
+                        
                         rows_inserted = 0
                         latest_date = None
                         
