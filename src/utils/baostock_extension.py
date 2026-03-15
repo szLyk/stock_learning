@@ -60,20 +60,25 @@ class BaostockExtension:
         # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
         redis_key = f"baostock:{data_type}"
         
-        # 1. 优先从 Redis 获取待处理股票
+        # 1. 优先从 Redis 获取待处理股票（剩余的）
         pending = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
         
-        if not pending:
-            # 2. Redis 为空，从数据库获取并初始化
-            stocks_df = self._get_pending_stocks_from_db()
-            if stocks_df is not None and not stocks_df.empty:
-                stock_list = stocks_df['stock_code'].tolist()
-                self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
-                self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票")
+        if pending:
+            # Redis 中有待处理股票，直接返回（断点续传）
+            self.logger.info(f"📌 从 Redis 获取 {len(pending)} 只待处理股票（断点续传）")
+            return pending
+        
+        # 2. Redis 为空，从数据库获取并初始化（首次执行）
+        stocks_df = self._get_pending_stocks_from_db()
+        if stocks_df is not None and not stocks_df.empty:
+            stock_list = stocks_df['stock_code'].tolist()
+            self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
+            self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票（首次执行）")
             return stocks_df
         
-        # 3. Redis 中有待处理股票
-        return pending
+        # 3. 数据库也为空
+        self.logger.info("⚠️ 未找到待采集股票")
+        return None
     
     def _get_pending_stocks_from_db(self):
         """从数据库获取待采集股票"""

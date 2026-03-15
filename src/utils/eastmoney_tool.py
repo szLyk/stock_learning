@@ -293,18 +293,31 @@ class EastMoneyFetcher:
     # =====================================================
     
     def get_pending_stocks(self, data_type):
-        """从 Redis 获取待采集股票"""
+        """从 Redis 或数据库获取待采集股票（支持断点续传）"""
         if self.redis_manager is None:
-            # 无 Redis，从数据库获取
             return self._get_pending_stocks_from_db(data_type)
         
+        # Redis key 格式：eastmoney:north:stock_data:2026-03-15:unprocessed
         redis_key = f"eastmoney:{data_type}"
+        
+        # 1. 优先从 Redis 获取待处理股票（剩余的）
         pending = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
         
-        if not pending:
-            return self._get_pending_stocks_from_db(data_type)
+        if pending:
+            # Redis 中有待处理股票，直接返回（断点续传）
+            self.logger.info(f"📌 从 Redis 获取 {len(pending)} 只待处理股票（断点续传）")
+            return pending
         
-        return pending
+        # 2. Redis 为空，从数据库获取并初始化（首次执行）
+        stocks_df = self._get_pending_stocks_from_db(data_type)
+        if stocks_df is not None and len(stocks_df) > 0:
+            self.redis_manager.add_unprocessed_stocks(stocks_df, self.now_date, redis_key)
+            self.logger.info(f"✅ Redis 初始化完成：{len(stocks_df)}只股票（首次执行）")
+            return stocks_df
+        
+        # 3. 数据库也为空
+        self.logger.info("⚠️ 未找到待采集股票")
+        return None
     
     def _get_pending_stocks_from_db(self, data_type):
         """从数据库获取待采集股票"""
