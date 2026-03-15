@@ -1,0 +1,19 @@
+# XXL-JOB Python Executor
+xxl-job-python>=0.1.0
+
+# 项目依赖
+pandas>=1.5.0
+numpy>=1.23.0
+baostock>=0.8.8
+SQLAlchemy>=2.0.0
+PyMySQL>=1.0.0
+redis>=4.5.0
+
+# 日志
+python-json-logger>=2.0.0
+
+# HTTP 请求
+requests>=2.28.0
+
+# 定时任务（备用）
+APScheduler>=3.9.0

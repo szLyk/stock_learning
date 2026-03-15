@@ -1,0 +1,24 @@
+[Unit]
+Description=Stock XXL-JOB Executor
+Documentation=https://github.com/xuxueli/xxl-job
+After=network.target mysql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/fan/.openclaw/workspace/stock_learning/xxljob
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/fan/.openclaw/workspace/stock_learning"
+ExecStart=/usr/bin/python3 /home/fan/.openclaw/workspace/stock_learning/xxljob/executor_server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=stock-xxljob
+
+# 资源限制
+LimitNOFILE=65535
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target
