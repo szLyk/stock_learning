@@ -459,12 +459,11 @@ class BaostockExtension:
     
     def run_full_collection(self, year=None, quarter=None):
         """
-        运行完整的数据采集流程（财务数据 + 业绩预告，支持 Redis 断点续传）
-        :param year: 年份
+        运行完整的数据采集流程（财务数据 + 业绩预告，支持 Redis 断点续传和历史数据初始化）
+        :param year: 年份，None 表示根据记录表自动判断
         :param quarter: 季度 (1-4)，None 表示全部季度
         """
-        if not year:
-            year = datetime.datetime.now().year
+        current_year = datetime.datetime.now().year
         
         self.logger.info("=== 开始扩展数据采集（支持断点续传）===")
         
@@ -491,11 +490,48 @@ class BaostockExtension:
         self.logger.info("\n[1/2] 采集财务数据...")
         for i, stock_code in enumerate(stock_list, 1):
             try:
-                results = self.fetch_financial_data(stock_code, year=year, quarter=quarter)
+                # 如果不指定年份，需要根据记录表判断采集范围
+                if year is None:
+                    # 从记录表获取该股票的上次更新时间
+                    pure_code = self._get_stock_code(stock_code)
+                    query = """
+                    SELECT update_profit_date FROM stock_performance_update_record 
+                    WHERE stock_code = %s
+                    """
+                    record = self.mysql_manager.query_all(query, [pure_code])
+                    
+                    if not record or not record[0]['update_profit_date']:
+                        # 首次采集：遍历 2007 年到当前年
+                        years_to_fetch = list(range(2007, current_year + 1))
+                        self.logger.debug(f"{stock_code}: 首次采集，年份范围 2007-{current_year}")
+                    else:
+                        # 有记录：只采集更新后的年份
+                        last_date = record[0]['update_profit_date']
+                        last_year = last_date.year if isinstance(last_date, datetime.date) else datetime.datetime.strptime(last_date, '%Y-%m-%d').year
+                        if last_year >= current_year:
+                            years_to_fetch = [current_year]
+                        else:
+                            years_to_fetch = list(range(last_year + 1, current_year + 1))
+                        self.logger.debug(f"{stock_code}: 上次更新 {last_date}，采集年份 {years_to_fetch}")
+                else:
+                    # 指定了年份，只采集指定年份
+                    years_to_fetch = [year] if isinstance(year, int) else year
+                
+                # 遍历年份采集
+                all_results = {}
+                for fetch_year in years_to_fetch:
+                    results = self.fetch_financial_data(stock_code, year=fetch_year, quarter=quarter)
+                    # 合并结果
+                    for table_name, df in results.items():
+                        if not df.empty:
+                            if table_name in all_results:
+                                all_results[table_name] = pd.concat([all_results[table_name], df], ignore_index=True)
+                            else:
+                                all_results[table_name] = df
                 
                 # 写入数据库
                 rows_inserted = 0
-                for table_name, df in results.items():
+                for table_name, df in all_results.items():
                     if not df.empty:
                         # 根据表名选择对应的入库方法，并接收返回值
                         if table_name == 'profit':
