@@ -474,9 +474,31 @@ class BaostockExtension:
         for i, stock_code in enumerate(stock_list, 1):
             try:
                 results = self.fetch_financial_data(stock_code, year=year, quarter=quarter)
-                if any(not df.empty for df in results.values()):
+                
+                # 写入数据库
+                rows_inserted = 0
+                for table_name, df in results.items():
+                    if not df.empty:
+                        # 根据表名选择对应的入库方法
+                        if table_name == 'profit':
+                            self.mysql_manager.batch_insert_or_update('stock_profit_data', df, ['stock_code', 'statistic_date'])
+                        elif table_name == 'balance':
+                            self.mysql_manager.batch_insert_or_update('stock_balance_data', df, ['stock_code', 'statistic_date'])
+                        elif table_name == 'cashflow':
+                            self.mysql_manager.batch_insert_or_update('stock_cash_flow_data', df, ['stock_code', 'statistic_date'])
+                        elif table_name == 'growth':
+                            self.mysql_manager.batch_insert_or_update('stock_growth_data', df, ['stock_code', 'statistic_date'])
+                        elif table_name == 'operation':
+                            self.mysql_manager.batch_insert_or_update('stock_operation_data', df, ['stock_code', 'statistic_date'])
+                        elif table_name == 'dupont':
+                            self.mysql_manager.batch_insert_or_update('stock_dupont_data', df, ['stock_code', 'statistic_date'])
+                        rows_inserted += len(df)
+                
+                if rows_inserted > 0:
                     success_count += 1
                     self.mark_as_processed(stock_code, 'extension')
+                    if i % 50 == 0:
+                        self.logger.info(f"股票 {stock_code} 入库成功：{rows_inserted}条")
                 
                 if i % 10 == 0:
                     self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
