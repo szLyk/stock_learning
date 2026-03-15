@@ -325,13 +325,12 @@ class EastMoneyFetcher:
         LEFT JOIN stock_basic b ON a.stock_code = b.stock_code
         WHERE ({date_column} IS NULL OR {date_column} < DATE_SUB(CURDATE(), INTERVAL 30 DAY))
           AND b.stock_status = 1
-        LIMIT 500
         """
         
         result = self.mysql_manager.query_all(sql)
         if not result:
             # 如果是新表，从 stock_basic 获取所有股票
-            sql = "SELECT stock_code, stock_name, market_type FROM stock_basic WHERE stock_status = 1 LIMIT 500"
+            sql = "SELECT stock_code, stock_name, market_type FROM stock_basic WHERE stock_status = 1"
             result = self.mysql_manager.query_all(sql)
         
         if not result:
@@ -374,109 +373,228 @@ class EastMoneyFetcher:
     # 批量采集
     # =====================================================
     
-    def batch_fetch_with_retry(self, data_type, max_retries=5):
-        """
-        批量采集数据（带 Redis 断点重试）
-        :param data_type: 数据类型 (moneyflow/north/shareholder/concept/analyst)
-        :param max_retries: 最大重试轮数
-        """
-        self.logger.info(f"=== 开始采集 {data_type} ===")
-        
+    # =====================================================
+    # 独立数据采集任务（每个类型一个方法）
+    # =====================================================
+    
+    def fetch_moneyflow_batch(self, max_retries=5):
+        """批量采集资金流向数据"""
+        self.logger.info("=== 开始采集资金流向 (moneyflow) ===")
         retry_count = 0
         while retry_count <= max_retries:
-            stock_codes = self.get_pending_stocks(data_type)
-            
+            stock_codes = self.get_pending_stocks('moneyflow')
             if not stock_codes:
-                if retry_count == 0:
-                    self.logger.warning("未找到待采集股票")
-                else:
-                    self.logger.info(f"✅ {data_type} 采集完成")
+                self.logger.info("✅ 资金流向采集完成" if retry_count == 0 else "✅ 资金流向补采完成")
                 return
-            
             total = len(stock_codes)
             self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
-            
             success_count = 0
             for i, stock_code in enumerate(stock_codes):
                 try:
-                    # 根据类型调用不同接口
-                    if data_type == 'moneyflow':
-                        df = self.fetch_moneyflow(stock_code[-6:], start_date='2026-01-01')
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
-                            self.update_record(stock_code[-6:], data_type, df['stock_date'].max())
-                            success_count += 1
-                    
-                    elif data_type == 'north':
-                        df = self.fetch_north_moneyflow(stock_code[-6:], limit=100)
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
-                            self.update_record(stock_code[-6:], data_type, df['stock_date'].max())
-                            success_count += 1
-                    
-                    elif data_type == 'shareholder':
-                        df = self.fetch_shareholder_count(stock_code[-6:])
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update('stock_shareholder_info', df, ['stock_code', 'report_date'])
-                            self.update_record(stock_code[-6:], data_type, df['report_date'].max())
-                            success_count += 1
-                    
-                    elif data_type == 'concept':
-                        df = self.fetch_concept(stock_code[-6:])
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update('stock_concept', df, ['stock_code', 'concept_name'])
-                            self.update_record(stock_code[-6:], data_type, self.now_date)
-                            success_count += 1
-                    
-                    elif data_type == 'analyst':
-                        df = self.fetch_analyst_rating(stock_code[-6:], limit=50)
-                        if not df.empty:
-                            self.mysql_manager.batch_insert_or_update('stock_analyst_expectation', df, ['stock_code', 'publish_date'])
-                            self.update_record(stock_code[-6:], data_type, df['publish_date'].max())
-                            success_count += 1
-                    
-                    # 标记为已处理
-                    self.mark_as_processed(stock_code, data_type)
-                    
+                    df = self.fetch_moneyflow(stock_code[-6:], start_date='2026-01-01')
+                    if not df.empty:
+                        self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
+                        self.update_record(stock_code[-6:], 'moneyflow', df['stock_date'].max())
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'moneyflow')
                     if (i + 1) % 50 == 0:
                         self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
-                    
-                    # 避免请求过快
                     if (i + 1) % 10 == 0:
                         time.sleep(0.3)
-                        
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-            
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
-            
-            # 检查是否还有剩余
-            remaining = self.get_pending_stocks(data_type)
+            remaining = self.get_pending_stocks('moneyflow')
             if not remaining:
-                self.logger.info(f"✅ {data_type} 全部采集完成")
+                self.logger.info("✅ 资金流向全部采集完成")
                 return
-            
             retry_count += 1
             if retry_count <= max_retries:
-                wait_sec = 5
-                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，{wait_sec}秒后重试...")
-                time.sleep(wait_sec)
-        
-        self.logger.error(f"❌ 达到最大重试次数，{data_type} 采集结束")
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
+                time.sleep(5)
+        self.logger.error("❌ 达到最大重试次数，资金流向采集结束")
+    
+    def fetch_north_batch(self, max_retries=5):
+        """批量采集北向资金数据"""
+        self.logger.info("=== 开始采集北向资金 (north) ===")
+        retry_count = 0
+        while retry_count <= max_retries:
+            stock_codes = self.get_pending_stocks('north')
+            if not stock_codes:
+                self.logger.info("✅ 北向资金采集完成" if retry_count == 0 else "✅ 北向资金补采完成")
+                return
+            total = len(stock_codes)
+            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
+            success_count = 0
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    df = self.fetch_north_moneyflow(stock_code[-6:], limit=100)
+                    if not df.empty:
+                        self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
+                        self.update_record(stock_code[-6:], 'north', df['stock_date'].max())
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'north')
+                    if (i + 1) % 50 == 0:
+                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                    if (i + 1) % 10 == 0:
+                        time.sleep(0.3)
+                except Exception as e:
+                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+            self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            remaining = self.get_pending_stocks('north')
+            if not remaining:
+                self.logger.info("✅ 北向资金全部采集完成")
+                return
+            retry_count += 1
+            if retry_count <= max_retries:
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
+                time.sleep(5)
+        self.logger.error("❌ 达到最大重试次数，北向资金采集结束")
+    
+    def fetch_shareholder_batch(self, max_retries=5):
+        """批量采集股东人数数据"""
+        self.logger.info("=== 开始采集股东人数 (shareholder) ===")
+        retry_count = 0
+        while retry_count <= max_retries:
+            stock_codes = self.get_pending_stocks('shareholder')
+            if not stock_codes:
+                self.logger.info("✅ 股东人数采集完成" if retry_count == 0 else "✅ 股东人数补采完成")
+                return
+            total = len(stock_codes)
+            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
+            success_count = 0
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    df = self.fetch_shareholder_count(stock_code[-6:])
+                    if not df.empty:
+                        self.mysql_manager.batch_insert_or_update('stock_shareholder_info', df, ['stock_code', 'report_date'])
+                        self.update_record(stock_code[-6:], 'shareholder', df['report_date'].max())
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'shareholder')
+                    if (i + 1) % 50 == 0:
+                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                    if (i + 1) % 10 == 0:
+                        time.sleep(0.3)
+                except Exception as e:
+                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+            self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            remaining = self.get_pending_stocks('shareholder')
+            if not remaining:
+                self.logger.info("✅ 股东人数全部采集完成")
+                return
+            retry_count += 1
+            if retry_count <= max_retries:
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
+                time.sleep(5)
+        self.logger.error("❌ 达到最大重试次数，股东人数采集结束")
+    
+    def fetch_concept_batch(self, max_retries=5):
+        """批量采集概念板块数据"""
+        self.logger.info("=== 开始采集概念板块 (concept) ===")
+        retry_count = 0
+        while retry_count <= max_retries:
+            stock_codes = self.get_pending_stocks('concept')
+            if not stock_codes:
+                self.logger.info("✅ 概念板块采集完成" if retry_count == 0 else "✅ 概念板块补采完成")
+                return
+            total = len(stock_codes)
+            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
+            success_count = 0
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    df = self.fetch_concept(stock_code[-6:])
+                    if not df.empty:
+                        self.mysql_manager.batch_insert_or_update('stock_concept', df, ['stock_code', 'concept_name'])
+                        self.update_record(stock_code[-6:], 'concept', self.now_date)
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'concept')
+                    if (i + 1) % 50 == 0:
+                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                    if (i + 1) % 10 == 0:
+                        time.sleep(0.3)
+                except Exception as e:
+                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+            self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            remaining = self.get_pending_stocks('concept')
+            if not remaining:
+                self.logger.info("✅ 概念板块全部采集完成")
+                return
+            retry_count += 1
+            if retry_count <= max_retries:
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
+                time.sleep(5)
+        self.logger.error("❌ 达到最大重试次数，概念板块采集结束")
+    
+    def fetch_analyst_batch(self, max_retries=5):
+        """批量采集分析师评级数据"""
+        self.logger.info("=== 开始采集分析师评级 (analyst) ===")
+        retry_count = 0
+        while retry_count <= max_retries:
+            stock_codes = self.get_pending_stocks('analyst')
+            if not stock_codes:
+                self.logger.info("✅ 分析师评级采集完成" if retry_count == 0 else "✅ 分析师评级补采完成")
+                return
+            total = len(stock_codes)
+            self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
+            success_count = 0
+            for i, stock_code in enumerate(stock_codes):
+                try:
+                    df = self.fetch_analyst_rating(stock_code[-6:], limit=50)
+                    if not df.empty:
+                        self.mysql_manager.batch_insert_or_update('stock_analyst_expectation', df, ['stock_code', 'publish_date'])
+                        self.update_record(stock_code[-6:], 'analyst', df['publish_date'].max())
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'analyst')
+                    if (i + 1) % 50 == 0:
+                        self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
+                    if (i + 1) % 10 == 0:
+                        time.sleep(0.3)
+                except Exception as e:
+                    self.logger.error(f"处理 {stock_code} 失败：{e}")
+            self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            remaining = self.get_pending_stocks('analyst')
+            if not remaining:
+                self.logger.info("✅ 分析师评级全部采集完成")
+                return
+            retry_count += 1
+            if retry_count <= max_retries:
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
+                time.sleep(5)
+        self.logger.error("❌ 达到最大重试次数，分析师评级采集结束")
     
     def run_full_collection(self):
         """运行完整的数据采集流程"""
         self.logger.info("=== 开始东方财富完整数据采集 ===")
         
         # 依次采集各类型数据
-        for data_type in ['moneyflow', 'north', 'concept', 'shareholder', 'analyst']:
-            try:
-                self.batch_fetch_with_retry(data_type, max_retries=3)
-            except Exception as e:
-                self.logger.error(f"{data_type} 采集中断：{e}")
-            
-            # 不同类型之间休眠
-            time.sleep(2)
+        try:
+            self.fetch_moneyflow_batch(max_retries=3)
+        except Exception as e:
+            self.logger.error(f"moneyflow 采集中断：{e}")
+        time.sleep(2)
+        
+        try:
+            self.fetch_north_batch(max_retries=3)
+        except Exception as e:
+            self.logger.error(f"north 采集中断：{e}")
+        time.sleep(2)
+        
+        try:
+            self.fetch_concept_batch(max_retries=3)
+        except Exception as e:
+            self.logger.error(f"concept 采集中断：{e}")
+        time.sleep(2)
+        
+        try:
+            self.fetch_shareholder_batch(max_retries=3)
+        except Exception as e:
+            self.logger.error(f"shareholder 采集中断：{e}")
+        time.sleep(2)
+        
+        try:
+            self.fetch_analyst_batch(max_retries=3)
+        except Exception as e:
+            self.logger.error(f"analyst 采集中断：{e}")
         
         self.logger.info("=== 数据采集完成 ===")
     
@@ -496,7 +614,19 @@ if __name__ == '__main__':
     if len(sys.argv) > 1:
         # 指定采集类型
         data_type = sys.argv[1]
-        fetcher.batch_fetch_with_retry(data_type, max_retries=3)
+        batch_methods = {
+            'moneyflow': fetcher.fetch_moneyflow_batch,
+            'north': fetcher.fetch_north_batch,
+            'shareholder': fetcher.fetch_shareholder_batch,
+            'concept': fetcher.fetch_concept_batch,
+            'analyst': fetcher.fetch_analyst_batch,
+        }
+        method = batch_methods.get(data_type)
+        if method:
+            method(max_retries=3)
+        else:
+            print(f"未知数据类型：{data_type}")
+            print("支持的类型：moneyflow, north, shareholder, concept, analyst")
     else:
         # 运行完整采集
         fetcher.run_full_collection()

@@ -409,8 +409,7 @@ class BaostockExtension:
         # 获取待采集的股票列表
         sql = """
         SELECT stock_code FROM stock.update_stock_record 
-        WHERE stock_code IS NOT NULL 
-        LIMIT 500
+        WHERE stock_code IS NOT NULL
         """
         result = self.mysql_manager.query_all(sql)
         if not result:
