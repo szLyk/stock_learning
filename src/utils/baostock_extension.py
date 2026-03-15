@@ -557,9 +557,62 @@ class BaostockExtension:
                 
                 # 列名映射（Baostock 驼峰命名 → 数据库下划线命名）
                 column_mapping = {
+                    # 基础字段
                     'pubDate': 'publish_date',
                     'statDate': 'statistic_date',
-                    'code': 'stock_code'
+                    'code': 'stock_code',
+                    
+                    # 利润表
+                    'roeAvg': 'roe_avg',
+                    'npMargin': 'np_margin',
+                    'gpMargin': 'gp_margin',
+                    'netProfit': 'net_profit',
+                    'epsTTM': 'eps_ttm',
+                    'MBRevenue': 'mb_revenue',
+                    'totalShare': 'total_share',
+                    'liqaShare': 'liqa_share',
+                    
+                    # 资产负债表
+                    'currentRatio': 'current_ratio',
+                    'quickRatio': 'quick_ratio',
+                    'cashRatio': 'cash_ratio',
+                    'YOYLiability': 'yoy_liability',
+                    'liabilityToAsset': 'liability_to_asset',
+                    'assetToEquity': 'asset_to_equity',
+                    
+                    # 成长能力
+                    'YOYEquity': 'yoy_equity',
+                    'YOYAsset': 'yoy_asset',
+                    'YOYNI': 'yoy_ni',
+                    'YOYEPSBasic': 'yoy_eps_basic',
+                    'YOYPNI': 'yoy_pni',
+                    
+                    # 运营能力
+                    'NRTurnRatio': 'nr_turn_ratio',
+                    'NRTurnDays': 'nr_turn_days',
+                    'INVTurnRatio': 'inv_turn_ratio',
+                    'INVTurnDays': 'inv_turn_days',
+                    'CATurnRatio': 'ca_turn_ratio',
+                    'AssetTurnRatio': 'asset_turn_ratio',
+                    
+                    # 杜邦分析
+                    'dupontROE': 'dupont_roe',
+                    'dupontAssetStoEquity': 'dupont_asset_sto_equity',
+                    'dupontAssetTurn': 'dupont_asset_turn',
+                    'dupontPnitoni': 'dupont_pnitoni',
+                    'dupontNitogr': 'dupont_nitogr',
+                    'dupontTaxBurden': 'dupont_tax_burden',
+                    'dupontIntburden': 'dupont_int_burden',
+                    'dupontEbittogr': 'dupont_ebit_to_gr',
+                    
+                    # 现金流量
+                    'CAToAsset': 'ca_to_asset',
+                    'NCAToAsset': 'nca_to_asset',
+                    'tangibleAssetToAsset': 'tangible_asset_to_asset',
+                    'ebitToInterest': 'ebit_to_interest',
+                    'CFOToOR': 'cfo_to_or',
+                    'CFOToNP': 'cfo_to_np',
+                    'CFOToGr': 'cfo_to_gr'
                 }
                 
                 for table_name, df in all_results.items():
