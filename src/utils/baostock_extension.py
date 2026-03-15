@@ -511,18 +511,23 @@ class BaostockExtension:
                     record = self.mysql_manager.query_all(query, [pure_code])
                     
                     if not record or not record[0]['update_profit_date']:
-                        # 首次采集：遍历 2007 年到当前年
+                        # 首次采集：遍历 2007 年到当前年（财务数据从 2007 年开始）
                         years_to_fetch = list(range(2007, current_year + 1))
                         self.logger.debug(f"{stock_code}: 首次采集，年份范围 2007-{current_year}")
                     else:
                         # 有记录：只采集更新后的年份
                         last_date = record[0]['update_profit_date']
-                        last_year = last_date.year if isinstance(last_date, datetime.date) else datetime.datetime.strptime(last_date, '%Y-%m-%d').year
-                        if last_year >= current_year:
-                            years_to_fetch = [current_year]
+                        # 处理默认值 1990-01-01 的情况
+                        if last_date == '1990-01-01' or (isinstance(last_date, datetime.date) and last_date.year == 1990):
+                            years_to_fetch = list(range(2007, current_year + 1))
+                            self.logger.debug(f"{stock_code}: 默认日期 1990-01-01，采集年份范围 2007-{current_year}")
                         else:
-                            years_to_fetch = list(range(last_year + 1, current_year + 1))
-                        self.logger.debug(f"{stock_code}: 上次更新 {last_date}，采集年份 {years_to_fetch}")
+                            last_year = last_date.year if isinstance(last_date, datetime.date) else datetime.datetime.strptime(last_date, '%Y-%m-%d').year
+                            if last_year >= current_year:
+                                years_to_fetch = [current_year]
+                            else:
+                                years_to_fetch = list(range(last_year + 1, current_year + 1))
+                            self.logger.debug(f"{stock_code}: 上次更新 {last_date}，采集年份 {years_to_fetch}")
                 else:
                     # 指定了年份，只采集指定年份
                     years_to_fetch = [year] if isinstance(year, int) else year
@@ -539,29 +544,40 @@ class BaostockExtension:
                             else:
                                 all_results[table_name] = df
                 
-                # 写入数据库
+                # 写入数据库（只写入已存在的表）
                 rows_inserted = 0
+                table_mapping = {
+                    'profit': 'stock_profit_data',
+                    'balance': 'stock_balance_data',
+                    'cashflow': 'stock_cash_flow_data',
+                    'growth': 'stock_growth_data',
+                    'operation': 'stock_operation_data',
+                    'dupont': 'stock_dupont_data'
+                }
+                
                 for table_name, df in all_results.items():
                     if not df.empty:
-                        # 根据表名选择对应的入库方法，并接收返回值
-                        if table_name == 'profit':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_profit_data', df, ['stock_code', 'statistic_date'])
+                        target_table = table_mapping.get(table_name)
+                        if not target_table:
+                            continue
+                        
+                        # 检查表是否存在
+                        check_query = """
+                        SELECT table_name FROM information_schema.tables 
+                        WHERE table_schema = 'stock' AND table_name = %s
+                        """
+                        table_exists = self.mysql_manager.query_all(check_query, [target_table])
+                        
+                        if not table_exists:
+                            self.logger.warning(f"表 {target_table} 不存在，跳过 {table_name} 数据入库")
+                            continue
+                        
+                        # 入库
+                        try:
+                            rows = self.mysql_manager.batch_insert_or_update(target_table, df, ['stock_code', 'statistic_date'])
                             rows_inserted += rows if rows else len(df)
-                        elif table_name == 'balance':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_balance_data', df, ['stock_code', 'statistic_date'])
-                            rows_inserted += rows if rows else len(df)
-                        elif table_name == 'cashflow':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_cash_flow_data', df, ['stock_code', 'statistic_date'])
-                            rows_inserted += rows if rows else len(df)
-                        elif table_name == 'growth':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_growth_data', df, ['stock_code', 'statistic_date'])
-                            rows_inserted += rows if rows else len(df)
-                        elif table_name == 'operation':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_operation_data', df, ['stock_code', 'statistic_date'])
-                            rows_inserted += rows if rows else len(df)
-                        elif table_name == 'dupont':
-                            rows = self.mysql_manager.batch_insert_or_update('stock_dupont_data', df, ['stock_code', 'statistic_date'])
-                            rows_inserted += rows if rows else len(df)
+                        except Exception as e:
+                            self.logger.error(f"{pure_code}: {table_name} 入库失败：{e}")
                 
                 if rows_inserted > 0:
                     success_count += 1
