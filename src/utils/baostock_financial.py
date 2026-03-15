@@ -543,13 +543,13 @@ class BaostockFinancialFetcher:
                         for year in years_to_fetch:
                             df = fetch_func(stock_code, year)
                             if not df.empty:
-                                self.mysql_manager.batch_insert_or_update(
+                                rows = self.mysql_manager.batch_insert_or_update(
                                     table_name, df, 
                                     ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
                                     else ['stock_code', 'publish_date'] if 'publish_date' in df.columns 
                                     else ['stock_code', 'announce_date']
                                 )
-                                rows_inserted += len(df)
+                                rows_inserted += rows if rows else len(df)
                                 if latest_date is None or df[date_field].max() > latest_date:
                                     latest_date = df[date_field].max()
                             time.sleep(0.2)

@@ -66,6 +66,7 @@ class BaostockExtension:
         if pending:
             # Redis 中有待处理股票，直接返回（断点续传）
             self.logger.info(f"📌 从 Redis 获取 {len(pending)} 只待处理股票（断点续传）")
+            self.logger.debug(f"Redis key: {redis_key}:stock_data:{self.now_date}:unprocessed")
             return pending
         
         # 2. Redis 为空，从数据库获取并初始化（首次执行）
@@ -74,6 +75,7 @@ class BaostockExtension:
             stock_list = stocks_df['stock_code'].tolist()
             self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
             self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票（首次执行）")
+            self.logger.debug(f"Redis key: {redis_key}:stock_data:{self.now_date}:unprocessed")
             return stocks_df
         
         # 3. 数据库也为空
@@ -101,9 +103,11 @@ class BaostockExtension:
             return
         
         # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
+        # remove_unprocessed_stocks 会自动拼接：{redis_key}:stock_data:{date}:unprocessed
         redis_key = f"baostock:{data_type}"
         # 从 unprocessed 集合中移除（表示已处理）
         self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
+        self.logger.debug(f"✅ {stock_code} 已从 Redis unprocessed 移除")
     
     def login(self):
         """登录 baostock"""
@@ -493,20 +497,25 @@ class BaostockExtension:
                 rows_inserted = 0
                 for table_name, df in results.items():
                     if not df.empty:
-                        # 根据表名选择对应的入库方法
+                        # 根据表名选择对应的入库方法，并接收返回值
                         if table_name == 'profit':
-                            self.mysql_manager.batch_insert_or_update('stock_profit_data', df, ['stock_code', 'statistic_date'])
+                            rows = self.mysql_manager.batch_insert_or_update('stock_profit_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                         elif table_name == 'balance':
-                            self.mysql_manager.batch_insert_or_update('stock_balance_data', df, ['stock_code', 'statistic_date'])
+                            rows = self.mysql_manager.batch_insert_or_update('stock_balance_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                         elif table_name == 'cashflow':
-                            self.mysql_manager.batch_insert_or_update('stock_cash_flow_data', df, ['stock_code', 'statistic_date'])
+                            rows = self.mysql_manager.batch_insert_or_update('stock_cash_flow_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                         elif table_name == 'growth':
-                            self.mysql_manager.batch_insert_or_update('stock_growth_data', df, ['stock_code', 'statistic_date'])
+                            rows = self.mysql_manager.batch_insert_or_update('stock_growth_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                         elif table_name == 'operation':
-                            self.mysql_manager.batch_insert_or_update('stock_operation_data', df, ['stock_code', 'statistic_date'])
+                            rows = self.mysql_manager.batch_insert_or_update('stock_operation_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                         elif table_name == 'dupont':
-                            self.mysql_manager.batch_insert_or_update('stock_dupont_data', df, ['stock_code', 'statistic_date'])
-                        rows_inserted += len(df)
+                            rows = self.mysql_manager.batch_insert_or_update('stock_dupont_data', df, ['stock_code', 'statistic_date'])
+                            rows_inserted += rows if rows else len(df)
                 
                 if rows_inserted > 0:
                     success_count += 1
