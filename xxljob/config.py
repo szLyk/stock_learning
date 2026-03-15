@@ -8,6 +8,9 @@ import os
 # XXL-JOB 调度中心地址
 XXL_JOB_ADMIN_ADDRESS = os.getenv('XXL_JOB_ADMIN_ADDRESS', 'http://xxl-job-admin:8080/xxl-job-admin')
 
+# 宿主机 IP（用于 Admin 访问执行器）
+HOST_IP = os.getenv('HOST_IP', '192.168.1.109')
+
 # 执行器配置
 EXECUTOR_CONFIG = {
     # 执行器 AppName（与 XXL-JOB 后台配置一致）
