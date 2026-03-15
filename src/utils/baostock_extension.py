@@ -555,6 +555,13 @@ class BaostockExtension:
                     'dupont': 'stock_dupont_data'
                 }
                 
+                # 列名映射（Baostock 驼峰命名 → 数据库下划线命名）
+                column_mapping = {
+                    'pubDate': 'publish_date',
+                    'statDate': 'statistic_date',
+                    'code': 'stock_code'
+                }
+                
                 for table_name, df in all_results.items():
                     if not df.empty:
                         target_table = table_mapping.get(table_name)
@@ -564,6 +571,9 @@ class BaostockExtension:
                         # 删除不需要的列（code 列）
                         if 'code' in df.columns:
                             df = df.drop(columns=['code'])
+                        
+                        # 列名重映射（驼峰 → 下划线）
+                        df = df.rename(columns=column_mapping)
                         
                         # 检查表是否存在
                         check_query = """

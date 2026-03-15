@@ -1,9 +1,31 @@
 -- =====================================================
 -- 财务数据表结构（缺失的表）
--- 执行前请确保：USE stock;
+-- 注意：需要使用 root 用户或有 CREATE 权限的用户执行
+-- 执行方式：mysql -h 192.168.1.109 -P 3306 -u root -p stock < sql/create_financial_tables.sql
 -- =====================================================
 
 USE stock;
+
+-- =====================================================
+-- 0. 现金流量表（之前缺失）
+-- =====================================================
+CREATE TABLE IF NOT EXISTS `stock_cash_flow_data` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY COMMENT '自增主键',
+  `stock_code` VARCHAR(10) NOT NULL COMMENT '证券代码',
+  `publish_date` DATE DEFAULT NULL COMMENT '公司发布财报的日期',
+  `statistic_date` DATE DEFAULT NULL COMMENT '财报统计的季度的最后一天',
+  `cfo_to_or` DECIMAL(10,4) DEFAULT NULL COMMENT '经营活动产生的现金流量净额/营业收入',
+  `cfo_to_np` DECIMAL(10,4) DEFAULT NULL COMMENT '经营活动产生的现金流量净额/净利润',
+  `cfo_to_gr` DECIMAL(10,4) DEFAULT NULL COMMENT '经营活动产生的现金流量净额/营业总收入',
+  `cat_to_asset` DECIMAL(10,4) DEFAULT NULL COMMENT '流动资产/总资产',
+  `ncat_to_asset` DECIMAL(10,4) DEFAULT NULL COMMENT '非流动资产/总资产',
+  `tangible_asset_to_asset` DECIMAL(10,4) DEFAULT NULL COMMENT '有形资产/总资产',
+  `ebit_to_interest` DECIMAL(10,4) DEFAULT NULL COMMENT '息税前利润/利息支出',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_stock_date` (`stock_code`, `statistic_date`),
+  KEY `idx_publish_date` (`publish_date`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='证券季频现金流量表';
 
 -- =====================================================
 -- 1. 资产负债表
