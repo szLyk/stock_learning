@@ -362,11 +362,13 @@ class EastMoneyFetcher:
         self.mysql_manager.execute(sql, (stock_code, update_date))
     
     def mark_as_processed(self, stock_code, data_type):
-        """标记股票为已处理（从 Redis 移除）"""
+        """标记股票为已处理（从 Redis unprocessed 集合中移除）"""
         if self.redis_manager is None:
             return
         
+        # Redis key 格式：eastmoney:north:stock_data:2026-03-15:unprocessed
         redis_key = f"eastmoney:{data_type}"
+        # 从 unprocessed 集合中移除（表示已处理）
         self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
     
     # =====================================================

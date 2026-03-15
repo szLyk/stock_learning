@@ -57,6 +57,7 @@ class BaostockExtension:
         if self.redis_manager is None:
             return self._get_pending_stocks_from_db()
         
+        # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
         redis_key = f"baostock:{data_type}"
         
         # 1. 优先从 Redis 获取待处理股票
@@ -65,7 +66,7 @@ class BaostockExtension:
         if not pending:
             # 2. Redis 为空，从数据库获取并初始化
             stocks_df = self._get_pending_stocks_from_db()
-            if not stocks_df.empty:
+            if stocks_df is not None and not stocks_df.empty:
                 stock_list = stocks_df['stock_code'].tolist()
                 self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
                 self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票")
@@ -90,11 +91,13 @@ class BaostockExtension:
         return df
     
     def mark_as_processed(self, stock_code, data_type='extension'):
-        """标记股票为已处理（从 Redis 移除）"""
+        """标记股票为已处理（从 Redis unprocessed 集合中移除）"""
         if self.redis_manager is None:
             return
         
+        # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
         redis_key = f"baostock:{data_type}"
+        # 从 unprocessed 集合中移除（表示已处理）
         self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
     
     def login(self):
