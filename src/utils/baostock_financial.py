@@ -396,7 +396,7 @@ class BaostockFinancialFetcher:
         return pending
     
     def _get_pending_stocks_from_db(self, data_type):
-        """从数据库获取待采集股票"""
+        """从数据库获取待采集股票（包含上次采集日期）"""
         date_column_map = {
             'profit': 'update_profit_date',
             'balance': 'update_balance_date',
@@ -410,26 +410,28 @@ class BaostockFinancialFetcher:
         
         date_column = date_column_map.get(data_type, 'update_profit_date')
         
-        # 获取 1 年内未更新的股票
+        # 获取所有股票及其上次采集日期
         sql = f"""
-        SELECT a.stock_code, b.stock_name, a.market_type 
+        SELECT a.stock_code, b.stock_name, a.market_type, 
+               COALESCE({date_column}, '1990-01-01') as last_update_date
         FROM stock_performance_update_record a
         LEFT JOIN stock_basic b ON a.stock_code = b.stock_code
-        WHERE ({date_column} IS NULL OR {date_column} < DATE_SUB(CURDATE(), INTERVAL 365 DAY))
-          AND b.stock_status = 1
+        WHERE b.stock_status = 1
         """
         
         result = self.mysql_manager.query_all(sql)
         if not result:
             sql = "SELECT stock_code, stock_name, market_type FROM stock_basic WHERE stock_status = 1"
             result = self.mysql_manager.query_all(sql)
+            if not result:
+                return []
+            df = pd.DataFrame(result)
+            df['last_update_date'] = '1990-01-01'
+        else:
+            df = pd.DataFrame(result)
         
-        if not result:
-            return []
-        
-        df = pd.DataFrame(result)
         df['stock_code'] = df['market_type'] + '.' + df['stock_code']
-        return df['stock_code'].tolist()
+        return df
     
     def update_record(self, stock_code, data_type, update_date):
         """更新采集记录"""
@@ -473,157 +475,195 @@ class BaostockFinancialFetcher:
     # 独立财务数据采集任务（每个类型一个方法）
     # =====================================================
     
-    def _fetch_single_type_batch(self, data_type, table_name, fetch_func, date_field, years, max_retries):
-        """通用批量采集方法"""
+    def _get_years_to_fetch(self, last_update_date):
+        """根据上次更新日期，计算需要采集的年份"""
+        if not last_update_date or last_update_date == '1990-01-01':
+            # 第一次采集，获取所有年份（从 2007 年到当前年）
+            return list(range(2007, self.current_year + 1))
+        
+        # 解析上次更新日期
+        try:
+            if isinstance(last_update_date, str):
+                last_date = datetime.datetime.strptime(last_update_date, '%Y-%m-%d')
+            else:
+                last_date = last_update_date
+        except:
+            return list(range(2007, self.current_year + 1))
+        
+        # 只采集上次日期之后的年份
+        start_year = last_date.year
+        # 如果上次采集了完整年份，从今年开始；否则从去年开始（确保不遗漏）
+        if start_year >= self.current_year:
+            return [self.current_year]
+        elif start_year >= self.current_year - 1:
+            return [self.current_year]
+        else:
+            # 采集从 last_year+1 到当前年的所有年份
+            return list(range(start_year + 1, self.current_year + 1))
+    
+    def _fetch_single_type_batch(self, data_type, table_name, fetch_func, date_field, max_retries):
+        """通用批量采集方法（根据记录表动态决定采集年份）"""
         self.logger.info(f"=== 开始采集 {data_type} ===")
         retry_count = 0
         while retry_count <= max_retries:
-            stock_codes = self.get_pending_stocks(data_type)
-            if not stock_codes:
+            stocks_df = self.get_pending_stocks(data_type)
+            if not stocks_df:
                 self.logger.info(f"✅ {data_type} 采集完成" if retry_count == 0 else f"✅ {data_type} 补采完成")
                 return
-            total = len(stock_codes)
+            total = len(stocks_df)
             self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
             success_count = 0
-            for i, stock_code in enumerate(stock_codes):
+            
+            for i, row in stocks_df.iterrows():
+                stock_code = row['stock_code']
+                last_update_date = row.get('last_update_date', '1990-01-01')
+                
                 try:
+                    # 根据上次更新日期，计算需要采集的年份
+                    years_to_fetch = self._get_years_to_fetch(last_update_date)
+                    
+                    if not years_to_fetch:
+                        # 不需要采集新数据
+                        success_count += 1
+                        continue
+                    
                     rows_inserted = 0
                     latest_date = None
-                    for year in years:
+                    
+                    for year in years_to_fetch:
                         df = fetch_func(stock_code, year)
                         if not df.empty:
-                            self.mysql_manager.batch_insert_or_update(table_name, df, ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns else ['stock_code', 'publish_date'] if 'publish_date' in df.columns else ['stock_code', 'announce_date'])
+                            self.mysql_manager.batch_insert_or_update(
+                                table_name, df, 
+                                ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
+                                else ['stock_code', 'publish_date'] if 'publish_date' in df.columns 
+                                else ['stock_code', 'announce_date']
+                            )
                             rows_inserted += len(df)
                             if latest_date is None or df[date_field].max() > latest_date:
                                 latest_date = df[date_field].max()
                         time.sleep(0.2)
+                    
                     if rows_inserted > 0:
                         success_count += 1
                         self.update_record(stock_code, data_type, latest_date)
                         self.mark_as_processed(stock_code, data_type)
+                    elif latest_date:
+                        # 即使没有新数据，也更新记录（避免重复检查）
+                        self.update_record(stock_code, data_type, latest_date)
+                    
                     if (i + 1) % 50 == 0:
                         self.logger.info(f"已处理 {i+1}/{total}，成功 {success_count}")
                     if (i + 1) % 10 == 0:
                         time.sleep(0.3)
+                        
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
+            
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
+            
+            # 检查是否还有剩余
             remaining = self.get_pending_stocks(data_type)
             if not remaining:
                 self.logger.info(f"✅ {data_type} 全部采集完成")
                 return
+            
             retry_count += 1
             if retry_count <= max_retries:
                 self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
                 time.sleep(5)
+        
         self.logger.error(f"❌ 达到最大重试次数，{data_type} 采集结束")
     
-    def fetch_profit_batch(self, years=None, max_retries=5):
+    def fetch_profit_batch(self, max_retries=5):
         """批量采集利润表数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('profit', 'stock_profit_data', self.fetch_profit_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('profit', 'stock_profit_data', self.fetch_profit_data, 'publish_date', max_retries)
     
-    def fetch_balance_batch(self, years=None, max_retries=5):
+    def fetch_balance_batch(self, max_retries=5):
         """批量采集资产负债表数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('balance', 'stock_balance_data', self.fetch_balance_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('balance', 'stock_balance_data', self.fetch_balance_data, 'publish_date', max_retries)
     
-    def fetch_cashflow_batch(self, years=None, max_retries=5):
+    def fetch_cashflow_batch(self, max_retries=5):
         """批量采集现金流量表数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('cashflow', 'stock_cash_flow_data', self.fetch_cash_flow_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('cashflow', 'stock_cash_flow_data', self.fetch_cash_flow_data, 'publish_date', max_retries)
     
-    def fetch_growth_batch(self, years=None, max_retries=5):
+    def fetch_growth_batch(self, max_retries=5):
         """批量采集成长能力数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('growth', 'stock_growth_data', self.fetch_growth_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('growth', 'stock_growth_data', self.fetch_growth_data, 'publish_date', max_retries)
     
-    def fetch_operation_batch(self, years=None, max_retries=5):
+    def fetch_operation_batch(self, max_retries=5):
         """批量采集运营能力数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('operation', 'stock_operation_data', self.fetch_operation_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('operation', 'stock_operation_data', self.fetch_operation_data, 'publish_date', max_retries)
     
-    def fetch_dupont_batch(self, years=None, max_retries=5):
+    def fetch_dupont_batch(self, max_retries=5):
         """批量采集杜邦分析数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('dupont', 'stock_dupont_data', self.fetch_dupont_data, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('dupont', 'stock_dupont_data', self.fetch_dupont_data, 'publish_date', max_retries)
     
-    def fetch_forecast_batch(self, years=None, max_retries=5):
+    def fetch_forecast_batch(self, max_retries=5):
         """批量采集业绩预告数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('forecast', 'stock_forecast_report', self.fetch_forecast_report, 'publish_date', years, max_retries)
+        self._fetch_single_type_batch('forecast', 'stock_forecast_report', self.fetch_forecast_report, 'publish_date', max_retries)
     
-    def fetch_dividend_batch(self, years=None, max_retries=5):
+    def fetch_dividend_batch(self, max_retries=5):
         """批量采集分红送配数据"""
-        if years is None:
-            years = [self.current_year, self.current_year - 1]
-        self._fetch_single_type_batch('dividend', 'stock_dividend_data', self.fetch_dividend_data, 'announce_date', years, max_retries)
+        self._fetch_single_type_batch('dividend', 'stock_dividend_data', self.fetch_dividend_data, 'announce_date', max_retries)
     
     def run_full_collection(self):
         """运行完整的财务数据采集流程"""
         self.logger.info("=== 开始 Baostock 财务数据完整采集 ===")
-        years = [self.current_year, self.current_year - 1]
         
         # 采集顺序：基础财务 → 能力分析 → 预告分红
         try:
             self.logger.info("\n[profit] 采集利润表...")
-            self.fetch_profit_batch(years=years, max_retries=3)
+            self.fetch_profit_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"profit 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[balance] 采集资产负债表...")
-            self.fetch_balance_batch(years=years, max_retries=3)
+            self.fetch_balance_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"balance 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[cashflow] 采集现金流量表...")
-            self.fetch_cashflow_batch(years=years, max_retries=3)
+            self.fetch_cashflow_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"cashflow 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[growth] 采集成长能力...")
-            self.fetch_growth_batch(years=years, max_retries=3)
+            self.fetch_growth_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"growth 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[operation] 采集运营能力...")
-            self.fetch_operation_batch(years=years, max_retries=3)
+            self.fetch_operation_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"operation 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[dupont] 采集杜邦分析...")
-            self.fetch_dupont_batch(years=years, max_retries=3)
+            self.fetch_dupont_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"dupont 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[forecast] 采集业绩预告...")
-            self.fetch_forecast_batch(years=years, max_retries=3)
+            self.fetch_forecast_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"forecast 采集中断：{e}")
         time.sleep(2)
         
         try:
             self.logger.info("\n[dividend] 采集分红送配...")
-            self.fetch_dividend_batch(years=years, max_retries=3)
+            self.fetch_dividend_batch(max_retries=3)
         except Exception as e:
             self.logger.error(f"dividend 采集中断：{e}")
         
@@ -657,7 +697,7 @@ if __name__ == '__main__':
         }
         method = batch_methods.get(data_type)
         if method:
-            method(years=[fetcher.current_year, fetcher.current_year - 1], max_retries=3)
+            method(max_retries=3)
         else:
             print(f"未知数据类型：{data_type}")
             print("支持的类型：profit, balance, cashflow, growth, operation, dupont, forecast, dividend")
