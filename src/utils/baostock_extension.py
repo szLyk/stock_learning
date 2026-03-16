@@ -568,13 +568,14 @@ class BaostockExtension:
                 }
                 
                 # 列名映射（Baostock 驼峰命名 → 数据库下划线命名）
+                # 完整映射所有 Baostock 可能返回的字段
                 column_mapping = {
                     # 基础字段
                     'pubDate': 'publish_date',
                     'statDate': 'statistic_date',
                     'code': 'stock_code',
                     
-                    # 利润表
+                    # 利润表 (query_profit_data)
                     'roeAvg': 'roe_avg',
                     'npMargin': 'np_margin',
                     'gpMargin': 'gp_margin',
@@ -584,7 +585,13 @@ class BaostockExtension:
                     'totalShare': 'total_share',
                     'liqaShare': 'liqa_share',
                     
-                    # 资产负债表
+                    # 资产负债表 (query_balance_data)
+                    'totalAssets': 'total_assets',
+                    'totalLiability': 'total_liabilities',
+                    'totalEquity': 'total_equity',
+                    'capitalReserve': 'capital_reserve',
+                    'surplusReserve': 'surplus_reserve',
+                    'undistributedProfit': 'undistributed_profit',
                     'currentRatio': 'current_ratio',
                     'quickRatio': 'quick_ratio',
                     'cashRatio': 'cash_ratio',
@@ -592,14 +599,23 @@ class BaostockExtension:
                     'liabilityToAsset': 'liability_to_asset',
                     'assetToEquity': 'asset_to_equity',
                     
-                    # 成长能力
+                    # 成长能力 (query_growth_data)
+                    'revenueYOY': 'revenue_yoy',
+                    'operatingProfitYOY': 'operating_profit_yoy',
+                    'netProfitYOY': 'net_profit_yoy',
+                    'totalAssetsYOY': 'total_assets_yoy',
+                    'totalEquityYOY': 'total_equity_yoy',
                     'YOYEquity': 'yoy_equity',
                     'YOYAsset': 'yoy_asset',
                     'YOYNI': 'yoy_ni',
                     'YOYEPSBasic': 'yoy_eps_basic',
                     'YOYPNI': 'yoy_pni',
                     
-                    # 运营能力
+                    # 运营能力 (query_operation_data)
+                    'inventoryTurnover': 'inventory_turnover',
+                    'receivablesTurnover': 'receivables_turnover',
+                    'currentAssetsTurnover': 'current_assets_turnover',
+                    'totalAssetsTurnover': 'total_assets_turnover',
                     'NRTurnRatio': 'nr_turn_ratio',
                     'NRTurnDays': 'nr_turn_days',
                     'INVTurnRatio': 'inv_turn_ratio',
@@ -607,7 +623,11 @@ class BaostockExtension:
                     'CATurnRatio': 'ca_turn_ratio',
                     'AssetTurnRatio': 'asset_turn_ratio',
                     
-                    # 杜邦分析
+                    # 杜邦分析 (query_dupont_data)
+                    'ROE': 'roe',
+                    'netProfitMargin': 'net_profit_margin',
+                    'assetTurnover': 'asset_turnover',
+                    'equityMultiplier': 'equity_multiplier',
                     'dupontROE': 'dupont_roe',
                     'dupontAssetStoEquity': 'dupont_asset_sto_equity',
                     'dupontAssetTurn': 'dupont_asset_turn',
@@ -617,14 +637,14 @@ class BaostockExtension:
                     'dupontIntburden': 'dupont_int_burden',
                     'dupontEbittogr': 'dupont_ebit_to_gr',
                     
-                    # 现金流量
+                    # 现金流量 (query_cash_flow_data)
+                    'CFOToOR': 'cfo_to_or',
+                    'CFOToNP': 'cfo_to_np',
+                    'CFOToGr': 'cfo_to_gr',
                     'CAToAsset': 'ca_to_asset',
                     'NCAToAsset': 'nca_to_asset',
                     'tangibleAssetToAsset': 'tangible_asset_to_asset',
-                    'ebitToInterest': 'ebit_to_interest',
-                    'CFOToOR': 'cfo_to_or',
-                    'CFOToNP': 'cfo_to_np',
-                    'CFOToGr': 'cfo_to_gr'
+                    'ebitToInterest': 'ebit_to_interest'
                 }
                 
                 for table_name, df in all_results.items():
