@@ -52,10 +52,18 @@ class BaostockExtension:
     # Redis 断点续传机制
     # =====================================================
     
-    def get_pending_stocks(self, data_type='extension'):
-        """从 Redis 或数据库获取待采集股票（支持断点续传）"""
+    def get_pending_stocks(self, data_type='extension', date=None):
+        """
+        从 Redis 或数据库获取待采集股票（支持断点续传）
+        :param data_type: 数据类型，默认 'extension'
+        :param date: 日期字符串（YYYY-MM-DD），None 表示使用当前日期
+                     用于跨天继续执行（如第二天传入昨天的日期继续跑）
+        """
         if self.redis_manager is None:
             return self._get_pending_stocks_from_db()
+        
+        # 使用传入的日期或当前日期
+        target_date = date if date else self.now_date
         
         # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
         # get_unprocessed_stocks 会自动拼接：{update_type}:stock_data:{date}:unprocessed
@@ -63,24 +71,24 @@ class BaostockExtension:
         redis_key = f"baostock:{data_type}"
         
         # 1. 优先从 Redis 获取待处理股票（剩余的）
-        pending = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
+        pending = self.redis_manager.get_unprocessed_stocks(target_date, redis_key)
         
         if pending:
             # Redis 中有待处理股票，直接返回（断点续传）
             self.logger.info(f"📌 从 Redis 获取 {len(pending)} 只待处理股票（断点续传）")
-            self.logger.debug(f"Redis key: {redis_key}:stock_data:{self.now_date}:unprocessed")
+            self.logger.debug(f"Redis key: {redis_key}:stock_data:{target_date}:unprocessed")
             return pending
         
         # 2. Redis 为空，从数据库获取并初始化（首次执行）
         stocks_df = self._get_pending_stocks_from_db()
         if stocks_df is not None and not stocks_df.empty:
             stock_list = stocks_df['stock_code'].tolist()
-            self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
+            self.redis_manager.add_unprocessed_stocks(stock_list, target_date, redis_key)
             self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票（首次执行）")
-            self.logger.debug(f"Redis key: {redis_key}:stock_data:{self.now_date}:unprocessed")
+            self.logger.debug(f"Redis key: {redis_key}:stock_data:{target_date}:unprocessed")
             
             # 重新从 Redis 获取（确保初始化成功）
-            pending_after_init = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
+            pending_after_init = self.redis_manager.get_unprocessed_stocks(target_date, redis_key)
             self.logger.info(f"验证：Redis 初始化后有 {len(pending_after_init)} 只股票")
             
             return stocks_df
@@ -104,17 +112,25 @@ class BaostockExtension:
         df['stock_code'] = 'sh.' + df['stock_code']  # 默认加上市场前缀
         return df
     
-    def mark_as_processed(self, stock_code, data_type='extension'):
-        """标记股票为已处理（从 Redis unprocessed 集合中移除）"""
+    def mark_as_processed(self, stock_code, data_type='extension', date=None):
+        """
+        标记股票为已处理（从 Redis unprocessed 集合中移除）
+        :param stock_code: 股票代码（带市场前缀，如 sh.600000）
+        :param data_type: 数据类型，默认 'extension'
+        :param date: 日期字符串（YYYY-MM-DD），None 表示使用当前日期
+        """
         if self.redis_manager is None:
             return
+        
+        # 使用传入的日期或当前日期
+        target_date = date if date else self.now_date
         
         # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
         # remove_unprocessed_stocks 会自动拼接：{redis_key}:stock_data:{date}:unprocessed
         redis_key = f"baostock:{data_type}"
         # 从 unprocessed 集合中移除（表示已处理）
-        self.redis_manager.remove_unprocessed_stocks([stock_code], self.now_date, redis_key)
-        self.logger.debug(f"✅ {stock_code} 已从 Redis unprocessed 移除")
+        self.redis_manager.remove_unprocessed_stocks([stock_code], target_date, redis_key)
+        self.logger.debug(f"✅ {stock_code} 已从 Redis unprocessed 移除（日期：{target_date}）")
     
     def login(self):
         """登录 baostock"""
@@ -486,18 +502,23 @@ class BaostockExtension:
     # 综合数据采集入口
     # =====================================================
     
-    def run_full_collection(self, year=None, quarter=None):
+    def run_full_collection(self, year=None, quarter=None, date=None):
         """
         运行完整的数据采集流程（财务数据 + 业绩预告，支持 Redis 断点续传和历史数据初始化）
         :param year: 年份，None 表示根据记录表自动判断
         :param quarter: 季度 (1-4)，None 表示全部季度
+        :param date: 日期字符串（YYYY-MM-DD），None 表示使用当前日期
+                     用于跨天继续执行（如第二天传入昨天的日期继续跑）
         """
         current_year = datetime.datetime.now().year
         
-        self.logger.info("=== 开始扩展数据采集（支持断点续传）===")
+        # 使用传入的日期或当前日期
+        target_date = date if date else self.now_date
+        
+        self.logger.info(f"=== 开始扩展数据采集（支持断点续传）日期：{target_date} ===")
         
         # 获取待采集的股票列表（从 Redis 或数据库）
-        result = self.get_pending_stocks('extension')
+        result = self.get_pending_stocks('extension', date=target_date)
         
         # 统一处理：可能是 list（Redis）或 DataFrame（数据库）
         if result is None:
@@ -697,9 +718,9 @@ class BaostockExtension:
                 
                 if rows_inserted > 0:
                     success_count += 1
-                    self.mark_as_processed(stock_code, 'extension')
+                    self.mark_as_processed(stock_code, 'extension', date=target_date)
                     if i % 50 == 0:
-                        self.logger.info(f"股票 {stock_code} 入库成功：{rows_inserted}条")
+                        self.logger.info(f"股票 {stock_code} 入库成功：{rows_inserted}条（日期：{target_date}）")
                 
                 if i % 10 == 0:
                     self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
