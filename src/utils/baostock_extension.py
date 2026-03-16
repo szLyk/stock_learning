@@ -58,6 +58,8 @@ class BaostockExtension:
             return self._get_pending_stocks_from_db()
         
         # Redis key 格式：baostock:extension:stock_data:2026-03-15:unprocessed
+        # get_unprocessed_stocks 会自动拼接：{update_type}:stock_data:{date}:unprocessed
+        # 所以这里传 redis_key 即可
         redis_key = f"baostock:{data_type}"
         
         # 1. 优先从 Redis 获取待处理股票（剩余的）
@@ -76,6 +78,11 @@ class BaostockExtension:
             self.redis_manager.add_unprocessed_stocks(stock_list, self.now_date, redis_key)
             self.logger.info(f"✅ Redis 初始化完成：{len(stock_list)}只股票（首次执行）")
             self.logger.debug(f"Redis key: {redis_key}:stock_data:{self.now_date}:unprocessed")
+            
+            # 重新从 Redis 获取（确保初始化成功）
+            pending_after_init = self.redis_manager.get_unprocessed_stocks(self.now_date, redis_key)
+            self.logger.info(f"验证：Redis 初始化后有 {len(pending_after_init)} 只股票")
+            
             return stocks_df
         
         # 3. 数据库也为空
@@ -555,6 +562,13 @@ class BaostockExtension:
                                 all_results[table_name] = pd.concat([all_results[table_name], df], ignore_index=True)
                             else:
                                 all_results[table_name] = df
+                
+                # 调试日志：检查采集结果
+                total_rows = sum(len(df) for df in all_results.values())
+                if total_rows == 0:
+                    self.logger.warning(f"{stock_code}: 所有表都无数据（年份：{years_to_fetch}）")
+                else:
+                    self.logger.debug(f"{stock_code}: 采集到 {total_rows} 条数据（{len(all_results)} 个表）")
                 
                 # 写入数据库（只写入已存在的表）
                 rows_inserted = 0
