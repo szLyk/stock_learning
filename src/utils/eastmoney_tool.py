@@ -51,9 +51,11 @@ class EastMoneyFetcher:
         # 请求频率控制
         self.request_count = 0
         self.last_request_time = 0
-        self.min_request_interval = 0.5  # 最小请求间隔（秒）
-        self.max_retry = 3  # 最大重试次数
-        self.retry_delay = 2  # 重试延迟（秒）
+        self.min_request_interval = 1.0  # 最小请求间隔（秒）- 增加到 1 秒
+        self.max_retry = 5  # 最大重试次数 - 增加到 5 次
+        self.retry_delay = 3  # 重试延迟（秒）- 增加到 3 秒
+        self.continuous_failures = 0  # 连续失败计数
+        self.max_continuous_failures = 10  # 连续失败阈值，超过则长时间暂停
     
     def _get_secid(self, stock_code):
         """获取证券 ID（东方财富格式）"""
@@ -76,11 +78,18 @@ class EastMoneyFetcher:
         self.last_request_time = time.time()
         self.request_count += 1
         
-        # 每 100 次请求，暂停一下
-        if self.request_count % 100 == 0:
-            pause_time = random.uniform(3, 5)
+        # 每 50 次请求，暂停一下（降低频率）
+        if self.request_count % 50 == 0:
+            pause_time = random.uniform(5, 10)
             self.logger.info(f"已请求 {self.request_count} 次，暂停 {pause_time:.1f} 秒")
             time.sleep(pause_time)
+        
+        # 检查连续失败，如果太多则长时间暂停
+        if self.continuous_failures >= self.max_continuous_failures:
+            long_pause = random.uniform(30, 60)
+            self.logger.warning(f"连续失败 {self.continuous_failures} 次，暂停 {long_pause:.1f} 秒")
+            time.sleep(long_pause)
+            self.continuous_failures = 0  # 重置计数器
     
     def _request_with_retry(self, url, params=None):
         """带重试机制的 HTTP 请求"""
@@ -92,19 +101,29 @@ class EastMoneyFetcher:
                 # 轮换 User-Agent
                 self.headers['User-Agent'] = random.choice(self.user_agents)
                 
-                resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+                # 增加超时时间
+                resp = requests.get(url, params=params, headers=self.headers, timeout=15)
                 resp.raise_for_status()
                 
+                # 请求成功，重置连续失败计数
+                self.continuous_failures = 0
                 return resp
             
             except requests.exceptions.RequestException as e:
+                # 记录连续失败
+                self.continuous_failures += 1
+                
                 if retry < self.max_retry - 1:
-                    # 随机延迟，避免同时重试
-                    delay = self.retry_delay * (retry + 1) + random.uniform(0, 1)
-                    self.logger.warning(f"请求失败，{delay:.1f}秒后重试（第{retry+1}/{self.max_retry}次）: {e}")
+                    # 指数退避 + 更大随机延迟
+                    base_delay = self.retry_delay * (retry + 1)
+                    delay = base_delay + random.uniform(2, 5)
+                    self.logger.warning(f"请求失败 ({self.continuous_failures}次连续)，{delay:.1f}秒后重试（第{retry+1}/{self.max_retry}次）: {e}")
                     time.sleep(delay)
                 else:
-                    self.logger.error(f"请求失败，已达最大重试次数：{e}")
+                    self.logger.error(f"请求失败，已达最大重试次数（连续失败{self.continuous_failures}次）: {e}")
+                    # 如果连续失败太多，记录警告
+                    if self.continuous_failures >= 5:
+                        self.logger.error(f"⚠️  连续失败{self.continuous_failures}次，建议暂停采集或检查网络")
                     raise
         
         return None
@@ -478,6 +497,15 @@ class EastMoneyFetcher:
                     df = self.fetch_moneyflow(stock_code[-6:], start_date='2026-01-01')
                     if not df.empty:
                         self.mysql_manager.batch_insert_or_update('stock_capital_flow', df, ['stock_code', 'stock_date'])
+                        self.update_record(stock_code[-6:], 'moneyflow', df['stock_date'].max())
+                        success_count += 1
+                    self.mark_as_processed(stock_code, 'moneyflow')
+                    
+                    # 每处理 20 只股票，暂停一下
+                    if (i + 1) % 20 == 0:
+                        pause_time = random.uniform(5, 10)
+                        self.logger.info(f"已处理 {i+1}/{total}，暂停 {pause_time:.1f} 秒")
+                        time.sleep(pause_time)
                         self.update_record(stock_code[-6:], 'moneyflow', df['stock_date'].max())
                         success_count += 1
                     self.mark_as_processed(stock_code, 'moneyflow')
