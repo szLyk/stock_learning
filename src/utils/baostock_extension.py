@@ -131,6 +131,17 @@ class BaostockExtension:
             return code_with_market.split('.')[-1]
         return code_with_market
     
+    def _clean_dataframe(self, df):
+        """
+        清洗 DataFrame，将空字符串、'None' 等无效值转换为 None
+        :param df: 待清洗的 DataFrame
+        :return: 清洗后的 DataFrame
+        """
+        for col in df.columns:
+            # 将空字符串、'None' 字符串转换为 None
+            df[col] = df[col].apply(lambda x: None if (isinstance(x, str) and (x == '' or x == 'None' or x.lower() == 'nan')) or (isinstance(x, float) and pd.isna(x)) else x)
+        return df
+    
     # =====================================================
     # 资金流向数据采集
     # =====================================================
@@ -305,14 +316,15 @@ class BaostockExtension:
         """
         获取业绩预告报告（baostock 支持）
         :param stock_code: 股票代码
-        :param year: 年份
+        :param year: 年份（注意：baostock 的 query_forecast_report 不支持 year 参数，此参数仅用于日志）
         :return: DataFrame
         """
         if not year:
             year = datetime.datetime.now().year
         
         try:
-            rs = bs.query_forecast_report(code=stock_code, year=year)
+            # 注意：query_forecast_report 不支持 year 参数，返回所有历史数据
+            rs = bs.query_forecast_report(code=stock_code)
             
             if rs.error_code != '0':
                 return pd.DataFrame()
@@ -627,6 +639,9 @@ class BaostockExtension:
                         
                         # 列名重映射（驼峰 → 下划线）
                         df = df.rename(columns=column_mapping)
+                        
+                        # 数据清洗：将空字符串转换为 None
+                        df = self._clean_dataframe(df)
                         
                         # 检查表是否存在
                         check_query = """

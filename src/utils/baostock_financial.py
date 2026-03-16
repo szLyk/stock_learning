@@ -55,6 +55,17 @@ class BaostockFinancialFetcher:
             return code_with_market.split('.')[-1]
         return code_with_market
     
+    def _clean_dataframe(self, df):
+        """
+        清洗 DataFrame，将空字符串、'None' 等无效值转换为 None
+        :param df: 待清洗的 DataFrame
+        :return: 清洗后的 DataFrame
+        """
+        for col in df.columns:
+            # 将空字符串、'None' 字符串转换为 None
+            df[col] = df[col].apply(lambda x: None if (isinstance(x, str) and (x == '' or x == 'None' or x.lower() == 'nan')) or (isinstance(x, float) and pd.isna(x)) else x)
+        return df
+    
     # =====================================================
     # 财务数据采集接口
     # =====================================================
@@ -307,12 +318,13 @@ class BaostockFinancialFetcher:
             return pd.DataFrame()
     
     def fetch_forecast_report(self, stock_code, year=None):
-        """获取业绩预告"""
+        """获取业绩预告（注意：baostock 的 query_forecast_report 不支持 year 参数）"""
         if not year:
             year = self.current_year
         
         try:
-            rs = bs.query_forecast_report(code=stock_code, year=year)
+            # 注意：query_forecast_report 不支持 year 参数，返回所有历史数据
+            rs = bs.query_forecast_report(code=stock_code)
             
             if rs.error_code != '0':
                 return pd.DataFrame()
@@ -583,6 +595,8 @@ class BaostockFinancialFetcher:
                         for year in years_to_fetch:
                             df = fetch_func(stock_code, year)
                             if not df.empty:
+                                # 数据清洗：将空字符串转换为 None
+                                df = self._clean_dataframe(df)
                                 rows = self.mysql_manager.batch_insert_or_update(
                                     table_name, df, 
                                     ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
@@ -631,6 +645,8 @@ class BaostockFinancialFetcher:
                         for year in years_to_fetch:
                             df = fetch_func(stock_code, year)
                             if not df.empty:
+                                # 数据清洗：将空字符串转换为 None
+                                df = self._clean_dataframe(df)
                                 self.mysql_manager.batch_insert_or_update(
                                     table_name, df, 
                                     ['stock_code', 'statistic_date'] if 'statistic_date' in df.columns 
