@@ -15,6 +15,7 @@ import datetime
 import pandas as pd
 import time
 import requests
+import random
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
 from src.utils.redis_tool import RedisUtil
@@ -34,12 +35,25 @@ class EastMoneyFetcher:
         self.base_url = "http://push2.eastmoney.com"
         self.datacenter_url = "http://datacenter-web.eastmoney.com"
         
-        # 请求头
+        # 请求头（多个 User-Agent 轮换）
+        self.user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ]
+        
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': random.choice(self.user_agents),
             'Referer': 'http://quote.eastmoney.com/',
             'Accept': 'application/json, text/plain, */*'
         }
+        
+        # 请求频率控制
+        self.request_count = 0
+        self.last_request_time = 0
+        self.min_request_interval = 0.5  # 最小请求间隔（秒）
+        self.max_retry = 3  # 最大重试次数
+        self.retry_delay = 2  # 重试延迟（秒）
     
     def _get_secid(self, stock_code):
         """获取证券 ID（东方财富格式）"""
@@ -49,6 +63,51 @@ class EastMoneyFetcher:
             return f"0.{stock_code}"
         else:
             return f"1.{stock_code}"
+    
+    def _control_request_rate(self):
+        """控制请求频率"""
+        current_time = time.time()
+        elapsed = current_time - self.last_request_time
+        
+        if elapsed < self.min_request_interval:
+            sleep_time = self.min_request_interval - elapsed
+            time.sleep(sleep_time)
+        
+        self.last_request_time = time.time()
+        self.request_count += 1
+        
+        # 每 100 次请求，暂停一下
+        if self.request_count % 100 == 0:
+            pause_time = random.uniform(3, 5)
+            self.logger.info(f"已请求 {self.request_count} 次，暂停 {pause_time:.1f} 秒")
+            time.sleep(pause_time)
+    
+    def _request_with_retry(self, url, params=None):
+        """带重试机制的 HTTP 请求"""
+        for retry in range(self.max_retry):
+            try:
+                # 控制请求频率
+                self._control_request_rate()
+                
+                # 轮换 User-Agent
+                self.headers['User-Agent'] = random.choice(self.user_agents)
+                
+                resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+                resp.raise_for_status()
+                
+                return resp
+            
+            except requests.exceptions.RequestException as e:
+                if retry < self.max_retry - 1:
+                    # 随机延迟，避免同时重试
+                    delay = self.retry_delay * (retry + 1) + random.uniform(0, 1)
+                    self.logger.warning(f"请求失败，{delay:.1f}秒后重试（第{retry+1}/{self.max_retry}次）: {e}")
+                    time.sleep(delay)
+                else:
+                    self.logger.error(f"请求失败，已达最大重试次数：{e}")
+                    raise
+        
+        return None
     
     # =====================================================
     # 数据获取接口
@@ -69,7 +128,9 @@ class EastMoneyFetcher:
         }
         
         try:
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            resp = self._request_with_retry(url, params=params)
+            if resp is None:
+                return pd.DataFrame()
             resp.raise_for_status()
             data = resp.json()
             
@@ -121,7 +182,9 @@ class EastMoneyFetcher:
         }
         
         try:
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            resp = self._request_with_retry(url, params=params)
+            if resp is None:
+                return pd.DataFrame()
             resp.raise_for_status()
             data = resp.json()
             
@@ -163,7 +226,9 @@ class EastMoneyFetcher:
         }
         
         try:
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            resp = self._request_with_retry(url, params=params)
+            if resp is None:
+                return pd.DataFrame()
             resp.raise_for_status()
             data = resp.json()
             
@@ -204,7 +269,9 @@ class EastMoneyFetcher:
         }
         
         try:
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            resp = self._request_with_retry(url, params=params)
+            if resp is None:
+                return pd.DataFrame()
             resp.raise_for_status()
             data = resp.json()
             
@@ -258,7 +325,9 @@ class EastMoneyFetcher:
         }
         
         try:
-            resp = requests.get(url, params=params, headers=self.headers, timeout=10)
+            resp = self._request_with_retry(url, params=params)
+            if resp is None:
+                return pd.DataFrame()
             resp.raise_for_status()
             data = resp.json()
             
