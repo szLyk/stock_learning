@@ -43,7 +43,7 @@ class VolumePriceFactor:
             # 直接从数据库查询日线数据
             sql = """
                 SELECT stock_date, trading_volume
-                FROM stock.stock_daily_price
+                FROM stock.stock_history_date_price
                 WHERE stock_code = %s
                 ORDER BY stock_date DESC
                 LIMIT %s
@@ -72,13 +72,13 @@ class VolumePriceFactor:
             # 成交量比率
             df['volume_ratio'] = df['trading_volume'] / df['volume_ma']
             
-            # 返回最新值
+            # 返回最新值（转换为 float）
             latest_ratio = df['volume_ratio'].iloc[-1]
             
             if pd.isna(latest_ratio) or latest_ratio == np.inf:
                 return 1.0  # 默认值
             
-            return latest_ratio
+            return float(latest_ratio)
             
         except Exception as e:
             self.logger.error(f"计算成交量比率失败 {stock_code}: {e}")
@@ -95,7 +95,7 @@ class VolumePriceFactor:
             # 直接从数据库查询日线数据
             sql = """
                 SELECT stock_date, close_price
-                FROM stock.stock_daily_price
+                FROM stock.stock_history_date_price
                 WHERE stock_code = %s
                 ORDER BY stock_date DESC
                 LIMIT %s
@@ -121,13 +121,13 @@ class VolumePriceFactor:
             # 价格变化率
             df['price_change'] = df['close_price'].pct_change(periods=window)
             
-            # 返回最新值
+            # 返回最新值（转换为 float）
             latest_change = df['price_change'].iloc[-1]
             
             if pd.isna(latest_change):
                 return 0.0
             
-            return latest_change * 100  # 转换为百分比
+            return float(latest_change) * 100  # 转换为百分比
             
         except Exception as e:
             self.logger.error(f"计算价格变化率失败 {stock_code}: {e}")
@@ -143,7 +143,7 @@ class VolumePriceFactor:
             # 直接从数据库查询最新换手率
             sql = """
                 SELECT turn
-                FROM stock.stock_daily_price
+                FROM stock.stock_history_date_price
                 WHERE stock_code = %s
                 ORDER BY stock_date DESC
                 LIMIT 1
@@ -197,7 +197,7 @@ class VolumePriceFactor:
             if pd.isna(latest_obv_change):
                 return 0.0
             
-            return latest_obv_change * 100  # 转换为百分比
+            return float(latest_obv_change) * 100  # 转换为百分比
             
         except Exception as e:
             self.logger.error(f"获取 OBV 失败 {stock_code}: {e}")
