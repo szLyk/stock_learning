@@ -363,6 +363,7 @@ if __name__ == '__main__':
     
     # 测试单只股票
     test_stocks = ['600000', '000001', '300750']
+    results = []
     
     for stock in test_stocks:
         print(f"\n【测试】{stock}")
@@ -374,6 +375,30 @@ if __name__ == '__main__':
             print(f"  价格变化：{result['price_change']:.2f}%")
             print(f"  换手率：{result['turnover_rate']:.2f}%")
             print(f"  OBV 变化：{result['obv_change']:.2f}%")
+            results.append(result)
+    
+    # 保存到数据库
+    if results:
+        print("\n" + "=" * 80)
+        print("保存到数据库")
+        print("=" * 80)
+        analyzer.save_to_db(results)
+        
+        # 验证保存结果
+        print("\n验证保存结果:")
+        for stock in test_stocks:
+            sql = """
+                SELECT stock_code, calc_date, volume_price_score, volume_ratio, price_change
+                FROM stock_factor_volume_price
+                WHERE stock_code = %s AND calc_date = CURDATE()
+                ORDER BY create_time DESC
+                LIMIT 1
+            """
+            result = analyzer.mysql_manager.query_one(sql, (stock,))
+            if result:
+                print(f"  ✅ {stock}: 得分={result['volume_price_score']:.2f}, 日期={result['calc_date']}")
+            else:
+                print(f"  ❌ {stock}: 未找到保存的数据")
     
     analyzer.close()
     print("\n测试完成！")
