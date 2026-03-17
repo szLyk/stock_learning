@@ -42,14 +42,19 @@ class VolumePriceFactor:
         :return: 成交量比率
         """
         try:
+            # 添加市场前缀
+            if stock_code.startswith('6'):
+                ts_code = f'sh.{stock_code}'
+            else:
+                ts_code = f'sz.{stock_code}'
+            
             # 获取日线数据
-            df = self.baostock.query_history_k_data(
-                stock_code, 
-                fields="date,open,high,low,close,volume,turn",
+            daily_type = self.baostock.get_daily_type('d')
+            df = self.baostock.fetch_daily_data(
+                daily_type=daily_type,
+                stock_code=ts_code,
                 start_date=(datetime.datetime.now() - datetime.timedelta(days=window*2)).strftime('%Y-%m-%d'),
-                end_date=self.now_date,
-                frequency="d",
-                adjustflag="3"
+                end_date=self.now_date
             )
             
             if df is None or df.empty:
@@ -82,13 +87,12 @@ class VolumePriceFactor:
         """
         try:
             # 获取日线数据
-            df = self.baostock.query_history_k_data(
-                stock_code,
-                fields="date,close",
+            daily_type = self.baostock.get_daily_type('d')
+            df = self.baostock.fetch_daily_data(
+                daily_type=daily_type,
+                stock_code=stock_code,
                 start_date=(datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d'),
-                end_date=self.now_date,
-                frequency="d",
-                adjustflag="3"
+                end_date=self.now_date
             )
             
             if df is None or df.empty:
@@ -117,13 +121,12 @@ class VolumePriceFactor:
         """
         try:
             # 获取日线数据
-            df = self.baostock.query_history_k_data(
-                stock_code,
-                fields="date,turn",
+            daily_type = self.baostock.get_daily_type('d')
+            df = self.baostock.fetch_daily_data(
+                daily_type=daily_type,
+                stock_code=stock_code,
                 start_date=(datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d'),
-                end_date=self.now_date,
-                frequency="d",
-                adjustflag="3"
+                end_date=self.now_date
             )
             
             if df is None or df.empty:
@@ -150,13 +153,12 @@ class VolumePriceFactor:
         """
         try:
             # 获取日线数据
-            df = self.baostock.query_history_k_data(
-                stock_code,
-                fields="date,close,volume",
+            daily_type = self.baostock.get_daily_type('d')
+            df = self.baostock.fetch_daily_data(
+                daily_type=daily_type,
+                stock_code=stock_code,
                 start_date=(datetime.datetime.now() - datetime.timedelta(days=60)).strftime('%Y-%m-%d'),
-                end_date=self.now_date,
-                frequency="d",
-                adjustflag="3"
+                end_date=self.now_date
             )
             
             if df is None or df.empty:
