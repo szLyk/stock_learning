@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.utils.baosock_tool import BaostockFetcher
 from src.utils.baostock_financial import BaostockFinancialFetcher
-from src.utils.eastmoney_tool import EastMoneyFetcher
+from src.utils.akshare_fetcher import AkShareFetcher
 from src.utils.indicator_calculation_tool import IndicatorCalculator
 from src.utils.multi_factor_tool import MultiFactorAnalyzer
 from logs.logger import LogManager
@@ -128,37 +128,57 @@ class StockDataExecutor:
             fetcher.close()
     
     # =====================================================
-    # 第 3 层：东方财富扩展数据
+    # 第 3 层：AKShare 扩展数据（资金流向/股东/概念/评级）
     # =====================================================
     
-    def run_eastmoney_collection(self, data_type):
+    def run_akshare_collection(self, data_type):
         """
-        采集东方财富数据
-        :param data_type: moneyflow/north/shareholder/concept/analyst
+        采集 AKShare 数据（支持批量采集 + Redis 断点续传）
+        :param data_type: moneyflow/shareholder/concept/analyst
         """
-        self.logger.info(f"=== 开始采集东方财富数据：{data_type} ===")
-        fetcher = EastMoneyFetcher()
+        start_time = datetime.datetime.now()
+        self.logger.info(f"{'='*60}")
+        self.logger.info(f"开始 AKShare 批量采集任务：{data_type}")
+        self.logger.info(f"{'='*60}")
+        
+        fetcher = AkShareFetcher()
         try:
-            batch_methods = {
-                'moneyflow': fetcher.fetch_moneyflow_batch,
-                'north': fetcher.fetch_north_batch,
-                'shareholder': fetcher.fetch_shareholder_batch,
-                'concept': fetcher.fetch_concept_batch,
-                'analyst': fetcher.fetch_analyst_batch,
-            }
-            
-            method = batch_methods.get(data_type)
-            if not method:
+            # 根据数据类型调用对应的批量采集方法
+            if data_type == 'moneyflow':
+                self.logger.info(f"调用 fetch_moneyflow_batch() - 资金流向批量采集")
+                fetcher.fetch_moneyflow_batch(max_retries=3)
+            elif data_type == 'shareholder':
+                self.logger.info(f"调用 fetch_shareholder_batch() - 股东人数批量采集")
+                fetcher.fetch_shareholder_batch(max_retries=3)
+            elif data_type == 'concept':
+                self.logger.info(f"调用 fetch_concept_batch() - 概念板块批量采集")
+                fetcher.fetch_concept_batch(max_retries=3)
+            elif data_type == 'analyst':
+                self.logger.info(f"调用 fetch_analyst_batch() - 分析师评级批量采集")
+                fetcher.fetch_analyst_batch(max_retries=3)
+            else:
                 raise ValueError(f"未知数据类型：{data_type}")
             
-            method(max_retries=3)
-            self.logger.info(f"✅ 东方财富数据{data_type}采集完成")
-            return {"data_type": data_type, "status": "success"}
+            # 计算耗时
+            end_time = datetime.datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            
+            self.logger.info(f"{'='*60}")
+            self.logger.info(f"✅ AKShare 批量采集完成：{data_type}")
+            self.logger.info(f"耗时：{duration:.1f} 秒")
+            self.logger.info(f"{'='*60}")
+            
+            return {
+                "data_type": data_type,
+                "status": "success",
+                "duration_seconds": duration
+            }
         except Exception as e:
-            self.logger.error(f"东方财富数据采集失败：{e}")
+            self.logger.error(f"❌ AKShare 批量采集失败：{e}")
             raise
         finally:
-            fetcher.close()
+            fetcher.mysql_manager.close()
+            self.logger.info(f"数据库连接已关闭")
     
     # =====================================================
     # 第 4 层：技术指标计算
@@ -266,8 +286,8 @@ if __name__ == '__main__':
     # 财务数据采集
     python3 executor.py run_financial_collection --data_type=profit
     
-    # 东方财富数据采集
-    python3 executor.py run_eastmoney_collection --data_type=north
+    # AKShare 数据采集
+    python3 executor.py run_akshare_collection --data_type=analyst
     
     # 指标计算
     python3 executor.py run_indicator_calculation --indicator_type=all
@@ -293,10 +313,10 @@ if __name__ == '__main__':
     financial_parser.add_argument('--data_type', required=True, 
                                   help='profit/balance/cashflow/growth/operation/dupont/forecast/dividend')
     
-    # 东方财富数据采集
-    eastmoney_parser = subparsers.add_parser('run_eastmoney_collection', help='采集东方财富数据')
-    eastmoney_parser.add_argument('--data_type', required=True,
-                                  help='moneyflow/north/shareholder/concept/analyst')
+    # AKShare 数据采集
+    akshare_parser = subparsers.add_parser('run_akshare_collection', help='采集 AKShare 数据')
+    akshare_parser.add_argument('--data_type', required=True,
+                                help='moneyflow/shareholder/concept/analyst')
     
     # 指标计算
     indicator_parser = subparsers.add_parser('run_indicator_calculation', help='计算技术指标')
@@ -317,8 +337,8 @@ if __name__ == '__main__':
             executor.run_min_collection()
         elif args.command == 'run_financial_collection':
             executor.run_financial_collection(args.data_type)
-        elif args.command == 'run_eastmoney_collection':
-            executor.run_eastmoney_collection(args.data_type)
+        elif args.command == 'run_akshare_collection':
+            executor.run_akshare_collection(args.data_type)
         elif args.command == 'run_indicator_calculation':
             executor.run_indicator_calculation(args.indicator_type)
         elif args.command == 'run_multi_factor':

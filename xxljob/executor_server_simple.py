@@ -93,12 +93,66 @@ def run_financial_collection_task(data_type='profit'):
     return {'status': 'success', 'data_type': data_type}
 
 
-def run_eastmoney_collection_task(data_type='moneyflow'):
-    """采集东方财富数据"""
-    log('INFO', f'开始采集东方财富数据：{data_type}')
-    time.sleep(1)
-    log('INFO', f'✅ 东方财富数据{data_type}采集完成')
-    return {'status': 'success', 'data_type': data_type}
+def run_akshare_collection_task(data_type='moneyflow'):
+    """
+    采集 AKShare 数据（资金流向/股东/概念/分析师评级）
+    支持批量采集 + Redis 断点续传
+    """
+    start_time = datetime.datetime.now()
+    log('INFO', '=' * 60)
+    log('INFO', f'开始 AKShare 批量采集任务：{data_type}')
+    log('INFO', '=' * 60)
+    
+    try:
+        sys.path.insert(0, WORKSPACE)
+        from src.utils.akshare_fetcher import AkShareFetcher
+        
+        # 创建采集器
+        fetcher = AkShareFetcher()
+        log('INFO', f'✅ AkShareFetcher 初始化成功')
+        
+        # 根据数据类型调用对应的批量采集方法
+        if data_type == 'moneyflow':
+            log('INFO', f'调用 fetch_moneyflow_batch() - 资金流向批量采集')
+            fetcher.fetch_moneyflow_batch(max_retries=3)
+        elif data_type == 'shareholder':
+            log('INFO', f'调用 fetch_shareholder_batch() - 股东人数批量采集')
+            fetcher.fetch_shareholder_batch(max_retries=3)
+        elif data_type == 'concept':
+            log('INFO', f'调用 fetch_concept_batch() - 概念板块批量采集')
+            fetcher.fetch_concept_batch(max_retries=3)
+        elif data_type == 'analyst':
+            log('INFO', f'调用 fetch_analyst_batch() - 分析师评级批量采集')
+            fetcher.fetch_analyst_batch(max_retries=3)
+        else:
+            log('ERROR', f'❌ 未知数据类型：{data_type}')
+            return {'status': 'error', 'msg': f'Unknown data type: {data_type}'}
+        
+        # 计算耗时
+        end_time = datetime.datetime.now()
+        duration = (end_time - start_time).total_seconds()
+        
+        log('INFO', '=' * 60)
+        log('INFO', f'✅ AKShare 批量采集完成：{data_type}')
+        log('INFO', f'耗时：{duration:.1f} 秒')
+        log('INFO', '=' * 60)
+        
+        return {
+            'status': 'success',
+            'data_type': data_type,
+            'duration_seconds': duration
+        }
+    except Exception as e:
+        log('ERROR', f'❌ AKShare 批量采集失败：{e}')
+        traceback.print_exc()
+        raise
+    finally:
+        # 确保关闭数据库连接
+        try:
+            fetcher.mysql_manager.close()
+            log('INFO', f'数据库连接已关闭')
+        except:
+            pass
 
 
 def run_indicator_calculation_task(indicator_type='all'):
@@ -122,7 +176,7 @@ JOB_HANDLERS = {
     'run_daily_collection': lambda p: run_daily_collection_task(p.get('date_type', 'd')),
     'run_min_collection': lambda p: run_daily_collection_task('min'),
     'run_financial_collection': lambda p: run_financial_collection_task(p.get('data_type', 'profit')),
-    'run_eastmoney_collection': lambda p: run_eastmoney_collection_task(p.get('data_type', 'moneyflow')),
+    'run_akshare_collection': lambda p: run_akshare_collection_task(p.get('data_type', 'moneyflow')),
     'run_indicator_calculation': lambda p: run_indicator_calculation_task(p.get('indicator_type', 'all')),
     'run_multi_factor': lambda p: run_multi_factor_task(),
 }

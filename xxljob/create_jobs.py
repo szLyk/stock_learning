@@ -105,38 +105,31 @@ JOBS = [
         'executor_timeout': 7200,
     },
     
-    # ========== 第 3 层：东方财富数据 ==========
+    # ========== 第 3 层：AKShare 数据（资金流向/股东/概念/评级） ==========
     {
-        'job_desc': '资金流向数据采集',
-        'job_handler': 'run_eastmoney_collection',
+        'job_desc': '资金流向数据采集（AKShare）',
+        'job_handler': 'run_akshare_collection',
         'cron': '0 0 21 * * ?',
         'executor_param': 'data_type=moneyflow',
         'executor_timeout': 3600,
     },
     {
-        'job_desc': '北向资金数据采集',
-        'job_handler': 'run_eastmoney_collection',
-        'cron': '0 0 21 * * ?',
-        'executor_param': 'data_type=north',
-        'executor_timeout': 3600,
-    },
-    {
-        'job_desc': '股东人数数据采集',
-        'job_handler': 'run_eastmoney_collection',
+        'job_desc': '股东人数数据采集（AKShare）',
+        'job_handler': 'run_akshare_collection',
         'cron': '0 0 21 * * ?',
         'executor_param': 'data_type=shareholder',
         'executor_timeout': 3600,
     },
     {
-        'job_desc': '概念板块数据采集',
-        'job_handler': 'run_eastmoney_collection',
+        'job_desc': '概念板块数据采集（AKShare）',
+        'job_handler': 'run_akshare_collection',
         'cron': '0 0 21 * * ?',
         'executor_param': 'data_type=concept',
         'executor_timeout': 3600,
     },
     {
-        'job_desc': '分析师评级数据采集',
-        'job_handler': 'run_eastmoney_collection',
+        'job_desc': '分析师评级数据采集（AKShare）',
+        'job_handler': 'run_akshare_collection',
         'cron': '0 0 21 * * ?',
         'executor_param': 'data_type=analyst',
         'executor_timeout': 3600,

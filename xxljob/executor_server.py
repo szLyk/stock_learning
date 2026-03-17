@@ -120,10 +120,10 @@ class JobHandler:
         return f"执行成功：{result}"
     
     @staticmethod
-    def run_eastmoney_collection(params):
-        """东方财富数据采集"""
+    def run_akshare_collection(params):
+        """AKShare 数据采集（资金流向/股东/概念/分析师评级）"""
         data_type = params.get('data_type', 'moneyflow')
-        result = executor_instance.run_eastmoney_collection(data_type)
+        result = executor_instance.run_akshare_collection(data_type)
         return f"执行成功：{result}"
     
     @staticmethod
@@ -145,7 +145,7 @@ JOB_HANDLERS = {
     'run_daily_collection': JobHandler.run_daily_collection,
     'run_min_collection': JobHandler.run_min_collection,
     'run_financial_collection': JobHandler.run_financial_collection,
-    'run_eastmoney_collection': JobHandler.run_eastmoney_collection,
+    'run_akshare_collection': JobHandler.run_akshare_collection,
     'run_indicator_calculation': JobHandler.run_indicator_calculation,
     'run_multi_factor': JobHandler.run_multi_factor,
 }
