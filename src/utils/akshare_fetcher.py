@@ -59,8 +59,15 @@ class AkShareFetcher:
         self.logger.info(f"AkShare 获取资金流向：{stock_code}")
         
         try:
-            # AkShare 接口
-            df = ak.stock_fund_flow_individual(symbol=stock_code)
+            # AkShare 接口（库本身可能有 bug，需要捕获列数不匹配错误）
+            try:
+                df = ak.stock_fund_flow_individual(symbol=stock_code)
+            except ValueError as ve:
+                # AKShare 库内部列数不匹配错误
+                if "Length mismatch" in str(ve):
+                    self.logger.warning(f"AkShare 库 bug（列数不匹配）：{stock_code}，跳过")
+                    return pd.DataFrame()
+                raise
             
             if df.empty:
                 self.logger.warning(f"AkShare 无资金流向数据：{stock_code}")
@@ -69,11 +76,11 @@ class AkShareFetcher:
             # 重命名列（匹配数据库字段）
             rename_map = {
                 '日期': 'stock_date',
-                '主力净流入-净额': 'main_net_in',
-                '小单净流入-净额': 'sm_net_in',
-                '中单净流入-净额': 'mm_net_in',
-                '大单净流入-净额': 'bm_net_in',
-                '主力净流入-净占比': 'main_net_in_rate',
+                '主力净流入 - 净额': 'main_net_in',
+                '小单净流入 - 净额': 'sm_net_in',
+                '中单净流入 - 净额': 'mm_net_in',
+                '大单净流入 - 净额': 'bm_net_in',
+                '主力净流入 - 净占比': 'main_net_in_rate',
                 '收盘价': 'close_price',
                 '涨跌幅': 'change_rate',
                 '换手率': 'turnover_rate',
@@ -87,7 +94,8 @@ class AkShareFetcher:
             df['stock_code'] = stock_code
             
             # 数据清洗
-            df['stock_date'] = pd.to_datetime(df['stock_date']).dt.date
+            if 'stock_date' in df.columns:
+                df['stock_date'] = pd.to_datetime(df['stock_date']).dt.date
             
             numeric_cols = ['main_net_in', 'sm_net_in', 'mm_net_in', 'bm_net_in',
                           'main_net_in_rate', 'close_price', 'change_rate', 'turnover_rate']
@@ -104,13 +112,13 @@ class AkShareFetcher:
             result_cols = [col for col in result_cols if col in df.columns]
             
             # 日期筛选
-            if start_date:
+            if start_date and 'stock_date' in df.columns:
                 df = df[df['stock_date'] >= pd.to_datetime(start_date).date()]
-            if end_date:
+            if end_date and 'stock_date' in df.columns:
                 df = df[df['stock_date'] <= pd.to_datetime(end_date).date()]
             
             self.logger.info(f"AkShare 成功获取 {stock_code} 资金流向：{len(df)} 条")
-            return df[result_cols]
+            return df[result_cols] if result_cols else pd.DataFrame()
             
         except Exception as e:
             self.logger.error(f"AkShare 获取资金流向失败 {stock_code}: {e}")
