@@ -132,23 +132,29 @@ class AkShareFetcher:
         """
         获取股东人数数据（AkShare）
         
-        接口：ak.stock_shareholder_change_ths
+        接口：ak.stock_shareholder_change_ths (获取所有股票，然后过滤)
         
         参数:
             stock_code: 股票代码
         
         返回:
             DataFrame with columns:
-            - stock_code, stock_name, report_date
+            - stock_code, report_date
             - shareholder_count, shareholder_change
-            - avg_hold_per_household, avg_hold_change
-            - freehold_shares, freehold_ratio
         """
         self.logger.info(f"AkShare 获取股东人数：{stock_code}")
         
         try:
-            # AkShare 接口
-            df = ak.stock_shareholder_change_ths(stock=stock_code)
+            # AkShare 接口（获取所有股票数据，然后过滤）
+            df = ak.stock_shareholder_change_ths()
+            if df.empty:
+                return pd.DataFrame()
+            
+            # 过滤指定股票
+            if '股票代码' in df.columns:
+                df = df[df['股票代码'] == stock_code]
+            elif 'stock_code' in df.columns:
+                df = df[df['stock_code'] == stock_code]
             
             if df.empty:
                 self.logger.warning(f"AkShare 无股东人数数据：{stock_code}")
