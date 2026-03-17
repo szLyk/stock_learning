@@ -146,40 +146,27 @@ class VolumePriceFactor:
     
     def calculate_obv(self, stock_code, window=20):
         """
-        计算 OBV 能量潮
+        从数据库获取 OBV 数据（已有计算）
         :param stock_code: 股票代码
         :param window: 计算 N 日 OBV 变化率
         :return: OBV 变化率
         """
         try:
-            # 获取日线数据
-            daily_type = self.baostock.get_daily_type('d')
-            df = self.baostock.fetch_daily_data(
-                daily_type=daily_type,
-                stock_code=stock_code,
-                start_date=(datetime.datetime.now() - datetime.timedelta(days=60)).strftime('%Y-%m-%d'),
-                end_date=self.now_date
-            )
+            # 直接从数据库查询 OBV 数据
+            sql = """
+                SELECT stock_date, obv, `30ma_obv`
+                FROM stock.stock_date_obv
+                WHERE stock_code = %s
+                ORDER BY stock_date DESC
+                LIMIT %s
+            """
+            result = self.mysql_manager.query_all(sql, (stock_code, window * 2))
             
-            if df is None or df.empty:
+            if not result:
+                self.logger.warning(f"未找到 {stock_code} 的 OBV 数据")
                 return 0.0
             
-            # 计算 OBV
-            obv = 0
-            obv_list = []
-            
-            for i in range(len(df)):
-                if i == 0:
-                    obv = df['volume'].iloc[0]
-                else:
-                    if df['close'].iloc[i] > df['close'].iloc[i-1]:
-                        obv += df['volume'].iloc[i]
-                    elif df['close'].iloc[i] < df['close'].iloc[i-1]:
-                        obv -= df['volume'].iloc[i]
-                    # 平盘不计
-                obv_list.append(obv)
-            
-            df['obv'] = obv_list
+            df = pd.DataFrame(result)
             
             # OBV 变化率
             df['obv_change'] = df['obv'].pct_change(periods=window)
@@ -192,7 +179,7 @@ class VolumePriceFactor:
             return latest_obv_change * 100  # 转换为百分比
             
         except Exception as e:
-            self.logger.error(f"计算 OBV 失败 {stock_code}: {e}")
+            self.logger.error(f"获取 OBV 失败 {stock_code}: {e}")
             return 0.0
     
     def calculate_volume_price_factor(self, stock_code):
