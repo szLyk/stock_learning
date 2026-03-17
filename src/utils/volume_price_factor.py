@@ -203,15 +203,16 @@ class VolumePriceFactor:
             self.logger.error(f"获取 OBV 失败 {stock_code}: {e}")
             return 0.0
     
-    def calculate_volume_price_factor(self, stock_code):
+    def calculate_volume_price_factor(self, stock_code, save_to_db=False):
         """
         计算量价因子（综合得分）
         
         公式：
-        量价因子 = 成交量比率 × 价格变化 × 100
+        量价因子 = 成交量比率 × 价格变化 × 换手率修正 × OBV 确认
         
         :param stock_code: 股票代码（纯代码）
-        :return: 量价因子得分（标准化为 0-100）
+        :param save_to_db: 是否计算后立即保存到数据库
+        :return: 量价因子得分（标准化为 0-100），如果 save_to_db=True 则返回保存的行数
         """
         self.logger.info(f"计算量价因子：{stock_code}")
         
@@ -249,7 +250,7 @@ class VolumePriceFactor:
                            f"(VR={volume_ratio:.2f}, PC={price_change:.2f}%, "
                            f"TR={turnover_rate:.2f}%, OBV={obv_change:.2f}%)")
             
-            return {
+            result = {
                 'stock_code': stock_code,
                 'volume_price_score': vp_score,
                 'volume_ratio': volume_ratio,
@@ -258,6 +259,18 @@ class VolumePriceFactor:
                 'obv_change': obv_change,
                 'calc_date': self.now_date
             }
+            
+            # 如果需要保存到数据库
+            if save_to_db:
+                rows = self.mysql_manager.batch_insert_or_update(
+                    'stock_factor_volume_price',
+                    pd.DataFrame([result]),
+                    ['stock_code', 'calc_date']
+                )
+                self.logger.info(f"✅ {stock_code} 已保存到数据库，{rows} 行")
+                return rows
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"计算量价因子失败 {stock_code}: {e}")
@@ -280,10 +293,11 @@ class VolumePriceFactor:
             return []
         return result
     
-    def calculate_batch(self, stock_codes=None):
+    def calculate_batch(self, stock_codes=None, save_to_db=True):
         """
         批量计算量价因子
         :param stock_codes: 股票代码列表，None 表示全部
+        :param save_to_db: 是否每计算一只股票就保存（推荐 True）
         """
         if stock_codes is None:
             stock_list = self.get_stock_list()
@@ -294,18 +308,26 @@ class VolumePriceFactor:
         
         results = []
         success_count = 0
+        saved_count = 0
         
         for i, stock_code in enumerate(stock_codes, 1):
             try:
-                result = self.calculate_volume_price_factor(stock_code)
+                # 计算并保存
+                result = self.calculate_volume_price_factor(stock_code, save_to_db=save_to_db)
                 if result:
-                    results.append(result)
+                    if save_to_db:
+                        saved_count += result  # result 是保存的行数
+                    else:
+                        results.append(result)
                     success_count += 1
                 
                 if i % 100 == 0:
-                    self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
+                    if save_to_db:
+                        self.logger.info(f"已处理 {i}/{total}，成功 {success_count}，已保存 {saved_count} 条")
+                    else:
+                        self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
                 
-                # 控制频率（Baostock 限制）
+                # 控制频率
                 if i % 50 == 0:
                     import time
                     time.sleep(1)
@@ -313,9 +335,14 @@ class VolumePriceFactor:
             except Exception as e:
                 self.logger.error(f"处理 {stock_code} 失败：{e}")
         
-        self.logger.info(f"量价因子计算完成：成功 {success_count}/{total}")
+        # 如果不实时保存，最后批量保存
+        if not save_to_db and results:
+            self.save_to_db(results)
+            saved_count = len(results)
         
-        return results
+        self.logger.info(f"量价因子计算完成：成功 {success_count}/{total}，保存 {saved_count} 条")
+        
+        return results if not save_to_db else saved_count
     
     # =====================================================
     # 数据库操作
@@ -358,47 +385,37 @@ if __name__ == '__main__':
     analyzer = VolumePriceFactor()
     
     print("=" * 80)
-    print("测试量价因子计算")
+    print("测试量价因子计算（计算后自动保存）")
     print("=" * 80)
     
-    # 测试单只股票
+    # 测试单只股票（自动保存）
     test_stocks = ['600000', '000001', '300750']
-    results = []
     
     for stock in test_stocks:
         print(f"\n【测试】{stock}")
         print("-" * 80)
-        result = analyzer.calculate_volume_price_factor(stock)
-        if result:
-            print(f"  量价因子得分：{result['volume_price_score']:.2f}")
-            print(f"  成交量比率：{result['volume_ratio']:.2f}")
-            print(f"  价格变化：{result['price_change']:.2f}%")
-            print(f"  换手率：{result['turnover_rate']:.2f}%")
-            print(f"  OBV 变化：{result['obv_change']:.2f}%")
-            results.append(result)
+        # 计算并保存到数据库
+        rows = analyzer.calculate_volume_price_factor(stock, save_to_db=True)
+        if rows:
+            print(f"  ✅ 已保存 {rows} 行")
     
-    # 保存到数据库
-    if results:
-        print("\n" + "=" * 80)
-        print("保存到数据库")
-        print("=" * 80)
-        analyzer.save_to_db(results)
-        
-        # 验证保存结果
-        print("\n验证保存结果:")
-        for stock in test_stocks:
-            sql = """
-                SELECT stock_code, calc_date, volume_price_score, volume_ratio, price_change
-                FROM stock_factor_volume_price
-                WHERE stock_code = %s AND calc_date = CURDATE()
-                ORDER BY create_time DESC
-                LIMIT 1
-            """
-            result = analyzer.mysql_manager.query_one(sql, (stock,))
-            if result:
-                print(f"  ✅ {stock}: 得分={result['volume_price_score']:.2f}, 日期={result['calc_date']}")
-            else:
-                print(f"  ❌ {stock}: 未找到保存的数据")
+    # 验证保存结果
+    print("\n" + "=" * 80)
+    print("验证保存结果")
+    print("=" * 80)
+    for stock in test_stocks:
+        sql = """
+            SELECT stock_code, calc_date, volume_price_score, volume_ratio, price_change
+            FROM stock_factor_volume_price
+            WHERE stock_code = %s AND calc_date = CURDATE()
+            ORDER BY create_time DESC
+            LIMIT 1
+        """
+        result = analyzer.mysql_manager.query_one(sql, (stock,))
+        if result:
+            print(f"  ✅ {stock}: 得分={result['volume_price_score']:.2f}, 日期={result['calc_date']}")
+        else:
+            print(f"  ❌ {stock}: 未找到保存的数据")
     
     analyzer.close()
     print("\n测试完成！")
