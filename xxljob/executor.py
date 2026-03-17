@@ -273,6 +273,47 @@ class StockDataExecutor:
 
 
 # =====================================================
+# 缠论二买选股
+# =====================================================
+
+def run_second_buy(self, days=3, method='price', min_power=0.1, min_power_ratio=1.0):
+    """
+    缠论二买选股 - 扫描全市场，识别近 N 天形成的第二类买点
+    
+    :param days: 日期范围（默认 3 天）
+    :param method: 力度计算方法（price/volume/snr）
+    :param min_power: 最小力度阈值
+    :param min_power_ratio: 最小回踩幅度%
+    """
+    self.logger.info(f"=== 开始缠论二买选股 ===")
+    self.logger.info(f"参数：days={days}, method={method}, min_power={min_power}, min_power_ratio={min_power_ratio}%")
+    
+    # 导入二买选股模块
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'skills', 'chanlun-second-buy-filter', 'scripts'))
+    
+    try:
+        from scan_second_buy import scan_all_stocks
+        
+        # 执行扫描
+        scan_all_stocks(
+            days=days,
+            method=method,
+            output_format='all',
+            min_power=min_power,
+            min_power_ratio=min_power_ratio
+        )
+        
+        self.logger.info(f"✅ 缠论二买选股完成")
+        return {"status": "success"}
+        
+    except Exception as e:
+        self.logger.error(f"缠论二买选股失败：{e}")
+        raise
+
+
+# =====================================================
 # XXL-JOB 任务入口
 # =====================================================
 
@@ -294,6 +335,9 @@ if __name__ == '__main__':
     
     # 多因子打分
     python3 executor.py run_multi_factor
+    
+    # 缠论二买选股
+    python3 executor.py run_second_buy --days 3 --method price --min-power 0.1 --min-power-ratio 1.0
     """
     
     import argparse
@@ -326,6 +370,13 @@ if __name__ == '__main__':
     # 多因子打分
     factor_parser = subparsers.add_parser('run_multi_factor', help='多因子打分')
     
+    # 缠论二买选股
+    second_buy_parser = subparsers.add_parser('run_second_buy', help='缠论二买选股')
+    second_buy_parser.add_argument('--days', type=int, default=3, help='筛选最近 N 天的 2 买')
+    second_buy_parser.add_argument('--method', type=str, default='price', help='力度计算方法')
+    second_buy_parser.add_argument('--min-power', type=float, default=0.1, help='最小力度阈值')
+    second_buy_parser.add_argument('--min-power-ratio', type=float, default=1.0, help='最小回踩幅度%')
+    
     args = parser.parse_args()
     
     executor = StockDataExecutor()
@@ -343,6 +394,13 @@ if __name__ == '__main__':
             executor.run_indicator_calculation(args.indicator_type)
         elif args.command == 'run_multi_factor':
             executor.run_multi_factor()
+        elif args.command == 'run_second_buy':
+            executor.run_second_buy(
+                days=args.days,
+                method=args.method,
+                min_power=args.min_power,
+                min_power_ratio=args.min_power_ratio
+            )
         else:
             parser.print_help()
     except Exception as e:
