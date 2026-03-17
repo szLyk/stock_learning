@@ -17,17 +17,15 @@ import pandas as pd
 import numpy as np
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
-from src.utils.baosock_tool import BaostockFetcher
 
 
 class VolumePriceFactor:
-    """量价因子计算器"""
+    """量价因子计算器（完全基于数据库数据）"""
     
     def __init__(self):
         self.logger = LogManager.get_logger("volume_price_factor")
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
-        self.baostock = BaostockFetcher()
         self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
     
     # =====================================================
@@ -36,35 +34,43 @@ class VolumePriceFactor:
     
     def calculate_volume_ratio(self, stock_code, window=20):
         """
-        计算成交量比率
+        计算成交量比率（从数据库直接查询）
         :param stock_code: 股票代码（纯代码，如 600000）
         :param window: 均量窗口
         :return: 成交量比率
         """
         try:
-            # 添加市场前缀
-            if stock_code.startswith('6'):
-                ts_code = f'sh.{stock_code}'
-            else:
-                ts_code = f'sz.{stock_code}'
+            # 直接从数据库查询日线数据
+            sql = """
+                SELECT stock_date, trading_volume
+                FROM stock.stock_daily_price
+                WHERE stock_code = %s
+                ORDER BY stock_date DESC
+                LIMIT %s
+            """
+            result = self.mysql_manager.query_all(sql, (stock_code, window * 2))
             
-            # 获取日线数据
-            daily_type = self.baostock.get_daily_type('d')
-            df = self.baostock.fetch_daily_data(
-                daily_type=daily_type,
-                stock_code=ts_code,
-                start_date=(datetime.datetime.now() - datetime.timedelta(days=window*2)).strftime('%Y-%m-%d'),
-                end_date=self.now_date
-            )
+            if not result:
+                self.logger.warning(f"未找到 {stock_code} 的日线数据")
+                return 1.0
             
-            if df is None or df.empty:
-                return None
+            df = pd.DataFrame(result)
+            
+            # 数据清洗
+            df['trading_volume'] = pd.to_numeric(df['trading_volume'], errors='coerce')
+            df = df.dropna(subset=['trading_volume'])
+            
+            if df.empty:
+                return 1.0
+            
+            # 按日期排序
+            df = df.sort_values('stock_date').reset_index(drop=True)
             
             # 计算成交量均值
-            df['volume_ma'] = df['volume'].rolling(window=window).mean()
+            df['volume_ma'] = df['trading_volume'].rolling(window=window).mean()
             
             # 成交量比率
-            df['volume_ratio'] = df['volume'] / df['volume_ma']
+            df['volume_ratio'] = df['trading_volume'] / df['volume_ma']
             
             # 返回最新值
             latest_ratio = df['volume_ratio'].iloc[-1]
@@ -80,26 +86,40 @@ class VolumePriceFactor:
     
     def calculate_price_change(self, stock_code, window=1):
         """
-        计算价格变化率
+        计算价格变化率（从数据库直接查询）
         :param stock_code: 股票代码
         :param window: 计算 N 日变化率
         :return: 价格变化率（百分比）
         """
         try:
-            # 获取日线数据
-            daily_type = self.baostock.get_daily_type('d')
-            df = self.baostock.fetch_daily_data(
-                daily_type=daily_type,
-                stock_code=stock_code,
-                start_date=(datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d'),
-                end_date=self.now_date
-            )
+            # 直接从数据库查询日线数据
+            sql = """
+                SELECT stock_date, close_price
+                FROM stock.stock_daily_price
+                WHERE stock_code = %s
+                ORDER BY stock_date DESC
+                LIMIT %s
+            """
+            result = self.mysql_manager.query_all(sql, (stock_code, window + 5))
             
-            if df is None or df.empty:
+            if not result:
+                self.logger.warning(f"未找到 {stock_code} 的日线数据")
                 return 0.0
             
+            df = pd.DataFrame(result)
+            
+            # 数据清洗
+            df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
+            df = df.dropna(subset=['close_price'])
+            
+            if df.empty:
+                return 0.0
+            
+            # 按日期排序
+            df = df.sort_values('stock_date').reset_index(drop=True)
+            
             # 价格变化率
-            df['price_change'] = df['close'].pct_change(periods=window)
+            df['price_change'] = df['close_price'].pct_change(periods=window)
             
             # 返回最新值
             latest_change = df['price_change'].iloc[-1]
@@ -115,27 +135,28 @@ class VolumePriceFactor:
     
     def calculate_turnover_rate(self, stock_code):
         """
-        计算换手率
+        计算换手率（从数据库直接查询）
         :param stock_code: 股票代码
         :return: 换手率（百分比）
         """
         try:
-            # 获取日线数据
-            daily_type = self.baostock.get_daily_type('d')
-            df = self.baostock.fetch_daily_data(
-                daily_type=daily_type,
-                stock_code=stock_code,
-                start_date=(datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d'),
-                end_date=self.now_date
-            )
+            # 直接从数据库查询最新换手率
+            sql = """
+                SELECT turn
+                FROM stock.stock_daily_price
+                WHERE stock_code = %s
+                ORDER BY stock_date DESC
+                LIMIT 1
+            """
+            result = self.mysql_manager.query_one(sql, (stock_code,))
             
-            if df is None or df.empty:
+            if not result:
+                self.logger.warning(f"未找到 {stock_code} 的换手率数据")
                 return 0.0
             
-            # 返回最新换手率
-            latest_turnover = df['turn'].iloc[-1]
+            latest_turnover = result.get('turn', 0)
             
-            if pd.isna(latest_turnover):
+            if latest_turnover is None:
                 return 0.0
             
             return float(latest_turnover)
@@ -328,7 +349,6 @@ class VolumePriceFactor:
     def close(self):
         """关闭连接"""
         self.mysql_manager.close()
-        self.baostock.close()
 
 
 # =====================================================
