@@ -200,3 +200,34 @@ class INDICATOR_CONFIG:
             'update_record_table': 'update_stock_record',
             'tradestatus': ' AND tradestatus = 1 ',
         }
+    
+    def get_atr_type(self, date_type='d'):
+        """获取 ATR 指标配置"""
+        if date_type == 'w':
+            return {
+                'update_column': 'update_stock_week_atr',
+                'data_table': 'stock_history_week_price',
+                'update_table': 'stock_week_atr',
+                'tradestatus': ' ',
+                'update_record_table': 'update_stock_record',
+                'frequency': 56  # 周线需要更多历史数据
+            }
+        if date_type == 'm':
+            return {
+                'update_column': 'update_stock_month_atr',
+                'data_table': 'stock_history_month_price',
+                'update_table': 'stock_month_atr',
+                'tradestatus': ' ',
+                'update_record_table': 'update_stock_record',
+                'frequency': 28  # 月线需要更多历史数据
+            }
+        
+        # 日线
+        return {
+            'update_column': 'update_stock_date_atr',
+            'data_table': 'stock_history_date_price',
+            'update_table': 'stock_date_atr',
+            'tradestatus': ' AND tradestatus = 1 ',
+            'update_record_table': 'update_stock_record',
+            'frequency': 14  # 日线需要 14 天以上数据
+        }
