@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-龙虎榜、基金持仓、融资融券数据采集脚本
+龙虎榜、基金持仓、融资融券数据采集脚本（支持断点续传）
 
 数据源: AKShare
 功能:
@@ -9,6 +9,11 @@
     2. 机构龙虎榜统计 (stock_lhb_jgstatistic_em)
     3. 基金持仓 (stock_report_fund_hold)
     4. 融资融券明细 (stock_margin_detail_sse)
+
+断点续传机制:
+    - 使用 Redis 记录已处理的日期/股票
+    - 中断后重新运行会自动跳过已处理的数据
+    - 数据库使用 INSERT ... ON DUPLICATE KEY UPDATE 保证幂等性
 
 使用方法:
     # 采集龙虎榜（最近3天）
@@ -22,6 +27,9 @@
     
     # 全部采集
     python scripts/fetch_lhb_margin_data.py --all
+    
+    # 清除断点记录（重新采集）
+    python scripts/fetch_lhb_margin_data.py --clear
 
 Author: Xiao Luo
 Date: 2026-04-02
@@ -34,16 +42,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 import argparse
 import pandas as pd
+import numpy as np
 import akshare as ak
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Set
 from src.utils.mysql_tool import MySQLUtil
 from src.utils.redis_tool import RedisUtil
 from logs.logger import LogManager
 
 
 class LHBMarginFetcher:
-    """龙虎榜、基金持仓、融资融券数据采集器"""
+    """龙虎榜、基金持仓、融资融券数据采集器（支持断点续传）"""
     
     def __init__(self):
         self.mysql = MySQLUtil()
@@ -56,12 +65,61 @@ class LHBMarginFetcher:
         self.mysql.close()
     
     # =====================================================
+    # Redis 断点续传机制
+    # =====================================================
+    
+    def _get_redis_key(self, data_type: str) -> str:
+        """获取 Redis key"""
+        return f"akshare:{data_type}"
+    
+    def _get_processed_dates(self, data_type: str) -> Set[str]:
+        """获取已处理的日期列表（从 Redis）"""
+        if not self.redis:
+            return set()
+        
+        key = f"{self._get_redis_key(data_type)}:stock_data:{self.now_date}:processed"
+        try:
+            return set(self.redis.client.smembers(key))
+        except Exception as e:
+            self.logger.warning(f"获取 Redis 数据失败: {e}")
+            return set()
+    
+    def _mark_date_processed(self, date_str: str, data_type: str):
+        """标记日期为已处理"""
+        if not self.redis:
+            return
+        
+        key = f"{self._get_redis_key(data_type)}:stock_data:{self.now_date}:processed"
+        try:
+            self.redis.client.sadd(key, date_str)
+        except Exception as e:
+            self.logger.warning(f"写入 Redis 失败: {e}")
+    
+    def _clear_processed_marks(self, data_type: str = None):
+        """清除已处理标记（用于重新采集）"""
+        if not self.redis:
+            return
+        
+        data_types = [data_type] if data_type else ['lhb_detail', 'lhb_institution', 'fund_hold', 'margin_detail']
+        
+        for dt in data_types:
+            key = f"{self._get_redis_key(dt)}:stock_data:{self.now_date}:processed"
+            try:
+                self.redis.client.delete(key)
+                self.logger.info(f"✅ 已清除 {dt} 断点记录")
+            except Exception as e:
+                self.logger.warning(f"清除 Redis 失败: {e}")
+    
+    # =====================================================
     # 龙虎榜数据采集
     # =====================================================
     
     def fetch_lhb_detail(self, start_date: str, end_date: str) -> int:
         """
-        采集龙虎榜明细
+        采集龙虎榜明细（支持断点续传）
+        
+        龙虎榜接口本身返回的是全量数据，使用数据库的 ON DUPLICATE KEY UPDATE 
+        保证幂等性，不需要额外的断点续传检查。
         
         Args:
             start_date: 开始日期 (YYYYMMDD)
@@ -118,9 +176,7 @@ class LHBMarginFetcher:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 保存到数据库
             # 数据清洗：将 NaN 转换为 None
-            import numpy as np
             df = df.replace({np.nan: None})
             df = df.where(pd.notnull(df), None)
             
@@ -132,6 +188,7 @@ class LHBMarginFetcher:
             result_cols = [col for col in result_cols if col in df.columns]
             df = df[result_cols]
             
+            # 保存到数据库
             count = self.mysql.batch_insert_or_update(
                 'stock_lhb_detail', df, ['stock_code', 'trade_date'])
             
@@ -144,7 +201,10 @@ class LHBMarginFetcher:
     
     def fetch_lhb_institution(self) -> int:
         """
-        采集机构龙虎榜统计
+        采集机构龙虎榜统计（支持断点续传）
+        
+        机构龙虎榜接口返回的是统计汇总数据，使用数据库的 ON DUPLICATE KEY UPDATE
+        保证幂等性。
         
         Returns:
             插入记录数
@@ -193,9 +253,7 @@ class LHBMarginFetcher:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 保存到数据库
             # 数据清洗：将 NaN 转换为 None
-            import numpy as np
             df = df.replace({np.nan: None})
             df = df.where(pd.notnull(df), None)
             
@@ -223,7 +281,10 @@ class LHBMarginFetcher:
     
     def fetch_fund_hold(self, date: str = None) -> int:
         """
-        采集基金持仓列表
+        采集基金持仓列表（支持断点续传）
+        
+        基金持仓接口返回的是全量数据，使用数据库的 ON DUPLICATE KEY UPDATE
+        保证幂等性。
         
         Args:
             date: 报告期 (如 20210331)，默认最新
@@ -231,7 +292,7 @@ class LHBMarginFetcher:
         Returns:
             插入记录数
         """
-        self.logger.info(f"=== 采集基金持仓列表 ===")
+        self.logger.info("=== 采集基金持仓列表 ===")
         
         try:
             if date:
@@ -258,7 +319,7 @@ class LHBMarginFetcher:
             existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
             df = df.rename(columns=existing_cols)
             
-            # 添加报告期（从数据中提取或使用当前日期）
+            # 添加报告期
             if 'report_date' not in df.columns:
                 df['report_date'] = date if date else datetime.now().strftime('%Y%m%d')
             
@@ -268,9 +329,7 @@ class LHBMarginFetcher:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 保存到数据库
             # 数据清洗：将 NaN 转换为 None
-            import numpy as np
             df = df.replace({np.nan: None})
             df = df.where(pd.notnull(df), None)
             
@@ -281,6 +340,7 @@ class LHBMarginFetcher:
             result_cols = [col for col in result_cols if col in df.columns]
             df = df[result_cols]
             
+            # 保存到数据库
             count = self.mysql.batch_insert_or_update(
                 'stock_fund_hold', df, ['stock_code', 'report_date'])
             
@@ -292,15 +352,7 @@ class LHBMarginFetcher:
             return 0
     
     def fetch_fund_hold_detail(self, stock_code: str) -> int:
-        """
-        采集个股基金持仓明细
-        
-        Args:
-            stock_code: 股票代码
-        
-        Returns:
-            插入记录数
-        """
+        """采集个股基金持仓明细"""
         try:
             df = ak.stock_report_fund_hold_detail(symbol=stock_code)
             
@@ -328,7 +380,9 @@ class LHBMarginFetcher:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 保存到数据库
+            df = df.replace({np.nan: None})
+            df = df.where(pd.notnull(df), None)
+            
             count = self.mysql.batch_insert_or_update(
                 'stock_fund_hold_detail', df, ['stock_code', 'stat_date'])
             
@@ -342,7 +396,6 @@ class LHBMarginFetcher:
         """批量采集个股基金持仓明细"""
         self.logger.info(f"=== 批量采集基金持仓明细 ===")
         
-        # 获取持仓基金家数最多的股票
         sql = f"""
         SELECT stock_code FROM stock_fund_hold 
         WHERE fund_count > 10 
@@ -372,12 +425,14 @@ class LHBMarginFetcher:
         self.logger.info(f"✅ 基金持仓明细采集完成: {success}/{total}")
     
     # =====================================================
-    # 融资融券数据采集
+    # 融资融券数据采集（带断点续传）
     # =====================================================
     
     def fetch_margin_detail(self, date: str = None) -> int:
         """
-        采集融资融券明细
+        采集融资融券明细（支持断点续传）
+        
+        按日期采集，使用 Redis 记录已处理的日期。
         
         Args:
             date: 日期 (YYYYMMDD)，默认今天
@@ -390,11 +445,21 @@ class LHBMarginFetcher:
         
         self.logger.info(f"=== 采集融资融券明细: {date} ===")
         
+        # 断点续传检查：检查该日期是否已处理
+        data_type = 'margin_detail'
+        processed = self._get_processed_dates(data_type)
+        
+        if date in processed:
+            self.logger.info(f"📅 {date} 已处理，跳过（断点续传）")
+            return 0
+        
         try:
             df = ak.stock_margin_detail_sse(date=date)
             
             if df.empty:
                 self.logger.warning(f"无融资融券数据: {date}")
+                # 标记为已处理（避免重复检查空数据）
+                self._mark_date_processed(date, data_type)
                 return 0
             
             # 列名映射
@@ -417,7 +482,7 @@ class LHBMarginFetcher:
             if 'trade_date' in df.columns:
                 df['trade_date'] = pd.to_datetime(df['trade_date'].astype(str), format='%Y%m%d').dt.date
             else:
-                df['trade_date'] = datetime.strptime(date, '%Y%m%d').date()
+                df['trade_date'] = datetime.strptime(date, '%Y%m%d').date
             
             numeric_cols = ['margin_balance', 'margin_buy', 'margin_repay',
                           'short_balance', 'short_sell', 'short_repay']
@@ -430,9 +495,7 @@ class LHBMarginFetcher:
             if 'stock_code' in df.columns:
                 df = df[df['stock_code'].str.match(r'^\d{6}$')]
             
-            # 保存到数据库
             # 数据清洗：将 NaN 转换为 None
-            import numpy as np
             df = df.replace({np.nan: None})
             df = df.where(pd.notnull(df), None)
             
@@ -443,8 +506,12 @@ class LHBMarginFetcher:
             result_cols = [col for col in result_cols if col in df.columns]
             df = df[result_cols]
             
+            # 保存到数据库
             count = self.mysql.batch_insert_or_update(
                 'stock_margin_detail', df, ['stock_code', 'trade_date'])
+            
+            # 标记该日期为已处理
+            self._mark_date_processed(date, data_type)
             
             self.logger.info(f"✅ 融资融券明细采集完成: {count} 条")
             return count
@@ -454,17 +521,24 @@ class LHBMarginFetcher:
             return 0
     
     def fetch_margin_history(self, days: int = 30):
-        """采集历史融资融券数据"""
+        """采集历史融资融券数据（带断点续传）"""
         self.logger.info(f"=== 采集历史融资融券数据（最近{days}天）===")
         
         total = 0
+        skipped = 0
+        
         for i in range(days):
             date = (datetime.now() - timedelta(days=i)).strftime('%Y%m%d')
             count = self.fetch_margin_detail(date)
-            total += count
+            
+            if count == 0:
+                skipped += 1
+            else:
+                total += count
+            
             time.sleep(0.5)
         
-        self.logger.info(f"✅ 历史融资融券采集完成: {total} 条")
+        self.logger.info(f"✅ 历史融资融券采集完成: 新增 {total} 条，跳过 {skipped} 天")
     
     # =====================================================
     # 综合采集
@@ -479,7 +553,7 @@ class LHBMarginFetcher:
             margin_days: 融资融券采集天数
         """
         self.logger.info("=" * 60)
-        self.logger.info("开始综合数据采集")
+        self.logger.info("开始综合数据采集（支持断点续传）")
         self.logger.info("=" * 60)
         
         # 1. 龙虎榜
@@ -496,7 +570,7 @@ class LHBMarginFetcher:
         self.fetch_fund_hold()
         time.sleep(1)
         
-        # 3. 融资融券
+        # 3. 融资融券（带断点续传）
         self.fetch_margin_history(days=margin_days)
         
         self.logger.info("=" * 60)
@@ -505,7 +579,7 @@ class LHBMarginFetcher:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='龙虎榜、基金持仓、融资融券数据采集')
+    parser = argparse.ArgumentParser(description='龙虎榜、基金持仓、融资融券数据采集（支持断点续传）')
     
     parser.add_argument('--lhb', action='store_true', help='采集龙虎榜数据')
     parser.add_argument('--lhb-days', type=int, default=3, help='龙虎榜采集天数')
@@ -519,11 +593,18 @@ def main():
     
     parser.add_argument('--all', action='store_true', help='全部采集')
     
+    parser.add_argument('--clear', action='store_true', help='清除断点记录（重新采集）')
+    parser.add_argument('--clear-type', type=str, help='清除指定类型的断点记录')
+    
     args = parser.parse_args()
     
     fetcher = LHBMarginFetcher()
     
     try:
+        if args.clear:
+            fetcher._clear_processed_marks(args.clear_type)
+            return
+        
         if args.all:
             fetcher.fetch_all(lhb_days=args.lhb_days, margin_days=args.margin_days)
         else:
@@ -545,7 +626,7 @@ def main():
                 else:
                     fetcher.fetch_margin_history(days=args.margin_days)
         
-        if not any([args.lhb, args.fund, args.fund_detail, args.margin, args.all]):
+        if not any([args.lhb, args.fund, args.fund_detail, args.margin, args.all, args.clear]):
             parser.print_help()
     
     finally:
