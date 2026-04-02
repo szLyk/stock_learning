@@ -59,23 +59,92 @@ class FinancialDataFetcher:
                     indicator = row['指标']
                     value = row[date_col]
                     
-                    # 映射指标名到字段名（只使用实际存在的指标）
+                    # 映射指标名到字段名（完整 67 个字段）
                     field_map = {
+                        # 利润指标
                         '归母净利润': 'parent_net_profit',
+                        '营业总收入': 'total_revenue',
+                        '营业成本': 'operating_cost',
                         '净利润': 'net_profit',
                         '扣非净利润': 'deduct_net_profit',
-                        '营业总收入': 'operating_income',
-                        '营业成本': 'operating_cost',
+                        
+                        # 资产指标
                         '股东权益合计(净资产)': 'net_assets',
+                        '商誉': 'goodwill',
+                        
+                        # 现金流指标
                         '经营现金流量净额': 'operating_cash_flow',
+                        
+                        # 每股指标
                         '基本每股收益': 'eps_basic',
-                        '每股净资产': 'bvps',
-                        '每股现金流': 'cfps',
+                        '稀释每股收益': 'eps_diluted',
+                        '摊薄每股收益_最新股数': 'eps_diluted_latest',
+                        '摊薄每股净资产_期末股数': 'bvps_diluted',
+                        '调整每股净资产_期末股数': 'bvps_adjusted',
+                        '每股净资产_最新股数': 'bvps_latest',
+                        '每股经营现金流': 'cfps',
+                        '每股现金流量净额': 'cash_flow_per_share',
+                        '每股企业自由现金流量': 'fcff_per_share',
+                        '每股股东自由现金流量': 'fcfe_per_share',
+                        '每股未分配利润': 'retained_earnings_per_share',
+                        '每股资本公积金': 'capital_reserve_per_share',
+                        '每股盈余公积金': 'surplus_reserve_per_share',
+                        '每股留存收益': 'retained_per_share',
+                        '每股营业收入': 'revenue_per_share',
+                        '每股营业总收入': 'total_revenue_per_share',
+                        '每股息税前利润': 'ebit_per_share',
+                        
+                        # 盈利能力指标
                         '净资产收益率(ROE)': 'roe',
-                        '总资产报酬率(ROA)': 'roa',
+                        '摊薄净资产收益率': 'roe_diluted',
+                        '净资产收益率_平均': 'roe_avg',
+                        '净资产收益率_平均_扣除非经常损益': 'roe_avg_deduct',
+                        '摊薄净资产收益率_扣除非经常损益': 'roe_diluted_deduct',
+                        '息税前利润率': 'ebit_margin',
+                        '总资产报酬率': 'roa',
+                        '总资本回报率': 'rota',
+                        '投入资本回报率': 'roic',
+                        '息前税后总资产报酬率_平均': 'roa_avg_after_tax',
                         '毛利率': 'gross_margin',
                         '销售净利率': 'net_margin',
+                        '成本费用利润率': 'cost_profit_ratio',
+                        '营业利润率': 'operating_margin',
+                        '总资产净利率_平均': 'roa_avg',
+                        '总资产净利率_平均(含少数股东损益)': 'roa_avg_minority',
+                        
+                        # 成长能力指标
+                        '营业总收入增长率': 'revenue_growth',
+                        '归属母公司净利润增长率': 'profit_growth',
+                        
+                        # 运营能力指标
+                        '经营活动净现金/销售收入': 'cash_to_revenue',
+                        '经营性现金净流量/营业总收入': 'cash_to_total_revenue',
+                        '成本费用率': 'cost_ratio',
+                        '期间费用率': 'expense_ratio',
+                        '销售成本率': 'cost_of_sales_ratio',
+                        '经营活动净现金/归属母公司的净利润': 'cash_to_profit',
+                        '所得税/利润总额': 'tax_to_profit',
+                        
+                        # 偿债能力指标
+                        '流动比率': 'current_ratio',
+                        '速动比率': 'quick_ratio',
+                        '保守速动比率': 'conservative_quick_ratio',
                         '资产负债率': 'debt_ratio',
+                        '权益乘数': 'equity_multiplier',
+                        '权益乘数(含少数股权的净资产)': 'equity_multiplier_minority',
+                        '产权比率': 'debt_equity_ratio',
+                        '现金比率': 'cash_ratio',
+                        
+                        # 周转能力指标
+                        '应收账款周转率': 'ar_turnover',
+                        '应收账款周转天数': 'ar_turnover_days',
+                        '存货周转率': 'inventory_turnover',
+                        '存货周转天数': 'inventory_turnover_days',
+                        '总资产周转率': 'asset_turnover',
+                        '总资产周转天数': 'asset_turnover_days',
+                        '流动资产周转率': 'current_asset_turnover',
+                        '流动资产周转天数': 'current_asset_turnover_days',
+                        '应付账款周转率': 'ap_turnover',
                     }
                     
                     if indicator in field_map:
@@ -100,17 +169,44 @@ class FinancialDataFetcher:
         
         sql = """
             INSERT INTO stock_financial_summary 
-            (stock_code, report_date, net_profit, parent_net_profit, deduct_net_profit,
-             operating_income, roe, roa, gross_margin, net_margin,
-             debt_ratio, eps_basic, bvps, cfps, net_assets, operating_cash_flow)
-            VALUES (%(stock_code)s, %(report_date)s, %(net_profit)s, %(parent_net_profit)s,
-                    %(deduct_net_profit)s, %(operating_income)s,
-                    %(roe)s, %(roa)s, %(gross_margin)s, %(net_margin)s, %(debt_ratio)s,
-                    %(eps_basic)s, %(bvps)s, %(cfps)s, %(net_assets)s, %(operating_cash_flow)s)
+            (stock_code, report_date, 
+             parent_net_profit, total_revenue, operating_cost, net_profit, deduct_net_profit,
+             net_assets, goodwill, operating_cash_flow,
+             eps_basic, eps_diluted, eps_diluted_latest, bvps_diluted, bvps_adjusted, bvps_latest,
+             cfps, cash_flow_per_share, fcff_per_share, fcfe_per_share,
+             retained_earnings_per_share, capital_reserve_per_share, surplus_reserve_per_share,
+             retained_per_share, revenue_per_share, total_revenue_per_share, ebit_per_share,
+             roe, roe_diluted, roe_avg, roe_avg_deduct, roe_diluted_deduct,
+             ebit_margin, roa, rota, roic, roa_avg_after_tax,
+             gross_margin, net_margin, cost_profit_ratio, operating_margin, roa_avg, roa_avg_minority,
+             revenue_growth, profit_growth,
+             cash_to_revenue, cash_to_total_revenue, cost_ratio, expense_ratio,
+             cost_of_sales_ratio, cash_to_profit, tax_to_profit,
+             current_ratio, quick_ratio, conservative_quick_ratio, debt_ratio,
+             equity_multiplier, equity_multiplier_minority, debt_equity_ratio, cash_ratio,
+             ar_turnover, ar_turnover_days, inventory_turnover, inventory_turnover_days,
+             asset_turnover, asset_turnover_days, current_asset_turnover, current_asset_turnover_days, ap_turnover)
+            VALUES (%(stock_code)s, %(report_date)s,
+                    %(parent_net_profit)s, %(total_revenue)s, %(operating_cost)s, %(net_profit)s, %(deduct_net_profit)s,
+                    %(net_assets)s, %(goodwill)s, %(operating_cash_flow)s,
+                    %(eps_basic)s, %(eps_diluted)s, %(eps_diluted_latest)s, %(bvps_diluted)s, %(bvps_adjusted)s, %(bvps_latest)s,
+                    %(cfps)s, %(cash_flow_per_share)s, %(fcff_per_share)s, %(fcfe_per_share)s,
+                    %(retained_earnings_per_share)s, %(capital_reserve_per_share)s, %(surplus_reserve_per_share)s,
+                    %(retained_per_share)s, %(revenue_per_share)s, %(total_revenue_per_share)s, %(ebit_per_share)s,
+                    %(roe)s, %(roe_diluted)s, %(roe_avg)s, %(roe_avg_deduct)s, %(roe_diluted_deduct)s,
+                    %(ebit_margin)s, %(roa)s, %(rota)s, %(roic)s, %(roa_avg_after_tax)s,
+                    %(gross_margin)s, %(net_margin)s, %(cost_profit_ratio)s, %(operating_margin)s, %(roa_avg)s, %(roa_avg_minority)s,
+                    %(revenue_growth)s, %(profit_growth)s,
+                    %(cash_to_revenue)s, %(cash_to_total_revenue)s, %(cost_ratio)s, %(expense_ratio)s,
+                    %(cost_of_sales_ratio)s, %(cash_to_profit)s, %(tax_to_profit)s,
+                    %(current_ratio)s, %(quick_ratio)s, %(conservative_quick_ratio)s, %(debt_ratio)s,
+                    %(equity_multiplier)s, %(equity_multiplier_minority)s, %(debt_equity_ratio)s, %(cash_ratio)s,
+                    %(ar_turnover)s, %(ar_turnover_days)s, %(inventory_turnover)s, %(inventory_turnover_days)s,
+                    %(asset_turnover)s, %(asset_turnover_days)s, %(current_asset_turnover)s, %(current_asset_turnover_days)s, %(ap_turnover)s)
             ON DUPLICATE KEY UPDATE
-                net_profit = VALUES(net_profit),
                 parent_net_profit = VALUES(parent_net_profit),
-                operating_income = VALUES(operating_income),
+                total_revenue = VALUES(total_revenue),
+                net_profit = VALUES(net_profit),
                 roe = VALUES(roe),
                 gross_margin = VALUES(gross_margin),
                 update_time = NOW()

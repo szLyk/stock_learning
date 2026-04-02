@@ -1,0 +1,4 @@
+﻿industry_type,circ_market_cap_mean,circ_market_cap_min,circ_market_cap_max,volatility_mean,volatility_std,avg_turnover_mean,avg_turnover_std,limit_ups_60d_mean,limit_ups_60d_sum,stock_count
+医药,52.12,11.32,127.16,38.65,13.06,2.0,0.93,0.5,25,50
+科技,27.38,5.48,41.48,57.09,18.36,4.1,2.6,1.36,68,50
+资源,89.12,13.99,174.73,55.77,15.42,4.38,2.12,1.59,35,22

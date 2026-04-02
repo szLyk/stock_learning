@@ -52,25 +52,30 @@ class AkShareFetcher:
         self.logger.info(f"AkShare 获取资金流向：{stock_code}")
         
         try:
-            df = self._retry_request(ak.stock_fund_flow_individual, symbol=stock_code)
+            # 判断市场（6开头是上海，其他是深圳）
+            market = 'sh' if stock_code.startswith('6') else 'sz'
+            
+            # 使用正确的接口（原 stock_fund_flow_individual 有 bug）
+            df = self._retry_request(ak.stock_individual_fund_flow, stock=stock_code, market=market)
             
             if df is None or df.empty:
                 return pd.DataFrame()
             
-            # 列名映射
+            # 列名映射（注意：列名没有空格）
             rename_map = {
                 '日期': 'stock_date',
-                '主力净流入-净额': 'main_net_in',
-                '小单净流入 - 净额': 'sm_net_in',
-                '中单净流入 - 净额': 'mm_net_in',
-                '大单净流入 - 净额': 'bm_net_in',
-                '主力净流入 - 净占比': 'main_net_in_rate',
-                '小单净流入 - 净占比': 'sm_net_in_rate',
-                '中单净流入 - 净占比': 'mm_net_in_rate',
-                '大单净流入 - 净占比': 'bm_net_in_rate',
                 '收盘价': 'close_price',
                 '涨跌幅': 'change_rate',
-                '换手率': 'turnover_rate',
+                '主力净流入-净额': 'main_net_in',
+                '主力净流入-净占比': 'main_net_in_rate',
+                '超大单净流入-净额': 'super_net_in',
+                '超大单净流入-净占比': 'super_net_in_rate',
+                '大单净流入-净额': 'big_net_in',
+                '大单净流入-净占比': 'big_net_in_rate',
+                '中单净流入-净额': 'mid_net_in',
+                '中单净流入-净占比': 'mid_net_in_rate',
+                '小单净流入-净额': 'small_net_in',
+                '小单净流入-净占比': 'small_net_in_rate',
             }
             
             existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
@@ -79,17 +84,20 @@ class AkShareFetcher:
             
             df['stock_date'] = pd.to_datetime(df['stock_date']).dt.date
             
-            numeric_cols = ['main_net_in', 'sm_net_in', 'mm_net_in', 'bm_net_in',
-                          'main_net_in_rate', 'sm_net_in_rate', 'mm_net_in_rate', 'bm_net_in_rate',
-                          'close_price', 'change_rate', 'turnover_rate']
+            numeric_cols = ['main_net_in', 'main_net_in_rate',
+                          'super_net_in', 'super_net_in_rate',
+                          'big_net_in', 'big_net_in_rate',
+                          'mid_net_in', 'mid_net_in_rate',
+                          'small_net_in', 'small_net_in_rate',
+                          'close_price', 'change_rate']
             
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            result_cols = ['stock_code', 'stock_date', 'main_net_in', 'sm_net_in',
-                          'mm_net_in', 'bm_net_in', 'main_net_in_rate',
-                          'close_price', 'change_rate', 'turnover_rate']
+            result_cols = ['stock_code', 'stock_date', 'main_net_in', 'main_net_in_rate',
+                          'super_net_in', 'big_net_in', 'mid_net_in', 'small_net_in',
+                          'close_price', 'change_rate']
             
             result_cols = [col for col in result_cols if col in df.columns]
             
@@ -105,25 +113,29 @@ class AkShareFetcher:
     # =====================================================
     
     def fetch_shareholder(self, stock_code):
-        """获取股东人数数据"""
-        self.logger.info(f"AkShare 获取股东人数：{stock_code}")
+        """获取股东户数数据"""
+        self.logger.info(f"AkShare 获取股东户数：{stock_code}")
         
         try:
-            df = self._retry_request(ak.stock_main_stock_holder, stock=stock_code)
+            # 使用正确的接口：股东户数详情
+            df = self._retry_request(ak.stock_zh_a_gdhs_detail_em, symbol=stock_code)
             
             if df is None or df.empty:
                 return pd.DataFrame()
             
             # 列名映射
             rename_map = {
-                '截至日期': 'report_date',
-                '股东总数': 'shareholder_count',
-                '平均持股数': 'avg_hold_per_household',
-                '股东名称': 'shareholder_name',
-                '持股数量': 'hold_shares',
-                '持股比例': 'hold_ratio',
-                '股本性质': 'share_type',
-                '公告日期': 'announce_date',
+                '股东户数统计截止日': 'report_date',
+                '区间涨跌幅': 'period_change',
+                '股东户数-本次': 'shareholder_count',
+                '股东户数-上次': 'shareholder_count_prev',
+                '股东户数-增减': 'shareholder_change',
+                '股东户数-增减比例': 'shareholder_change_rate',
+                '户均持股市值': 'avg_hold_value',
+                '户均持股数量': 'avg_hold_count',
+                '总市值': 'total_mv',
+                '总股本': 'total_share',
+                '股东户数公告日期': 'announce_date',
             }
             
             existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
@@ -131,26 +143,29 @@ class AkShareFetcher:
             df['stock_code'] = stock_code
             
             df['report_date'] = pd.to_datetime(df['report_date']).dt.date
-            df['announce_date'] = pd.to_datetime(df['announce_date']).dt.date if 'announce_date' in df.columns else None
+            if 'announce_date' in df.columns:
+                df['announce_date'] = pd.to_datetime(df['announce_date']).dt.date
             
-            numeric_cols = ['shareholder_count', 'avg_hold_per_household',
-                          'hold_shares', 'hold_ratio']
+            numeric_cols = ['shareholder_count', 'shareholder_count_prev',
+                          'shareholder_change', 'shareholder_change_rate',
+                          'avg_hold_value', 'avg_hold_count',
+                          'total_mv', 'total_share', 'period_change']
             
             for col in numeric_cols:
                 if col in df.columns:
                     df[col] = pd.to_numeric(df[col], errors='coerce')
             
             result_cols = ['stock_code', 'report_date', 'shareholder_count',
-                          'avg_hold_per_household', 'shareholder_name',
-                          'hold_shares', 'hold_ratio', 'share_type', 'announce_date']
+                          'shareholder_count_prev', 'shareholder_change', 'shareholder_change_rate',
+                          'avg_hold_value', 'avg_hold_count', 'total_mv', 'total_share']
             
             result_cols = [col for col in result_cols if col in df.columns]
             
-            self.logger.info(f"成功获取 {stock_code} 股东人数：{len(df)} 条")
+            self.logger.info(f"成功获取 {stock_code} 股东户数：{len(df)} 条")
             return df[result_cols]
             
         except Exception as e:
-            self.logger.error(f"获取股东人数失败 {stock_code}: {e}")
+            self.logger.error(f"获取股东户数失败 {stock_code}: {e}")
             return pd.DataFrame()
     
     # =====================================================
