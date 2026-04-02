@@ -37,6 +37,12 @@ class MainWaveDetector:
     VOLUME_CONFIRM_RATIO = 3.0    # 确认信号：成交量放大≥3倍
     VOLUME_TOP_RATIO = 7.0        # 见顶信号：成交量放大≥7倍
     
+    # 换手率阈值（新增）
+    TURNOVER_ACCUMULATION_MAX = 3.0   # 蓄势期最高换手率（%）
+    TURNOVER_START_MIN = 5.0          # 启动日最低换手率（%）
+    TURNOVER_WAVE_MIN = 5.0           # 主升浪期平均换手率（%）
+    TURNOVER_TOP_MIN = 15.0           # 见顶换手率阈值（%）
+    
     # 涨停板参数
     LIMIT_UP_THRESHOLD = 9.5      # 涨停判断阈值（%）
     MIN_LIMIT_UP_COUNT = 3        # 最少涨停板数量
@@ -96,6 +102,7 @@ class MainWaveDetector:
                 close_price as close,
                 trading_volume as volume,
                 ups_and_downs as change_pct,
+                turn as turnover_rate,
                 pre_close
             FROM stock_history_date_price
             WHERE stock_code = %s
@@ -433,6 +440,67 @@ class MainWaveDetector:
             'latest_macd': latest_macd
         }
     
+    def analyze_turnover(self, price_df: pd.DataFrame) -> dict:
+        """
+        分析换手率（新增）
+        
+        Returns:
+            {
+                'accumulation_turnover': float,  # 蓄势期平均换手率
+                'latest_turnover': float,        # 最新换手率
+                'turnover_ratio': float,         # 换手率放大倍数
+                'avg_wave_turnover': float,      # 主升浪期平均换手率
+                'is_turnover_start': bool,       # 是否换手率启动
+                'is_turnover_top': bool          # 是否换手率见顶
+            }
+        """
+        if price_df.empty or 'turnover_rate' not in price_df.columns:
+            return {
+                'accumulation_turnover': 0,
+                'latest_turnover': 0,
+                'turnover_ratio': 0,
+                'avg_wave_turnover': 0,
+                'is_turnover_start': False,
+                'is_turnover_top': False
+            }
+        
+        # 蓄势期换手率（前10天）
+        if len(price_df) >= self.ACCUMULATION_DAYS + 1:
+            acc_turnover = price_df.iloc[-self.ACCUMULATION_DAYS-1:-1]['turnover_rate'].mean()
+        else:
+            acc_turnover = price_df['turnover_rate'].mean()
+        
+        # 最新换手率
+        latest_turnover = float(price_df.iloc[-1]['turnover_rate'])
+        
+        # 换手率放大倍数
+        turnover_ratio = latest_turnover / acc_turnover if acc_turnover > 0 else 0
+        
+        # 主升浪期平均换手率（最近5天）
+        if len(price_df) >= 5:
+            avg_wave_turnover = price_df.tail(5)['turnover_rate'].mean()
+        else:
+            avg_wave_turnover = price_df['turnover_rate'].mean()
+        
+        # 判断换手率启动信号
+        is_turnover_start = (
+            acc_turnover < self.TURNOVER_ACCUMULATION_MAX and
+            latest_turnover >= self.TURNOVER_START_MIN and
+            turnover_ratio >= 2.0
+        )
+        
+        # 判断换手率见顶信号
+        is_turnover_top = latest_turnover >= self.TURNOVER_TOP_MIN
+        
+        return {
+            'accumulation_turnover': float(acc_turnover),
+            'latest_turnover': latest_turnover,
+            'turnover_ratio': float(turnover_ratio),
+            'avg_wave_turnover': float(avg_wave_turnover),
+            'is_turnover_start': is_turnover_start,
+            'is_turnover_top': is_turnover_top
+        }
+    
     def calculate_wave_strength(self, price_df: pd.DataFrame) -> dict:
         """
         计算主升浪强度
@@ -538,6 +606,9 @@ class MainWaveDetector:
         # 5. 涨幅分析
         wave_strength = self.calculate_wave_strength(price_df.tail(20))
         
+        # 6. 换手率分析（新增）
+        turnover_info = self.analyze_turnover(price_df)
+        
         # ==================== 综合判断 ====================
         
         signals = {
@@ -545,12 +616,13 @@ class MainWaveDetector:
             'limit_up': limit_up_info,
             'ma': ma_info,
             'macd': macd_info,
-            'wave_strength': wave_strength
+            'wave_strength': wave_strength,
+            'turnover': turnover_info  # 新增
         }
         
         # 判断阶段
         wave_stage, confidence, recommendation = self._determine_wave_stage(
-            volume_signals, limit_up_info, ma_info, macd_info, wave_strength
+            volume_signals, limit_up_info, ma_info, macd_info, wave_strength, turnover_info
         )
         
         return {
@@ -564,34 +636,36 @@ class MainWaveDetector:
             'latest_date': price_df.iloc[-1]['stock_date'].strftime('%Y-%m-%d')
         }
     
-    def _determine_wave_stage(self, volume_signals, limit_up_info, ma_info, macd_info, wave_strength) -> tuple:
+    def _determine_wave_stage(self, volume_signals, limit_up_info, ma_info, macd_info, wave_strength, turnover_info=None) -> tuple:
         """
         综合判断主升浪阶段
         
         Returns:
             (wave_stage, confidence, recommendation)
         """
+        if turnover_info is None:
+            turnover_info = {}
+        
         # 计算信号得分
         score = 0
-        max_score = 5
+        max_score = 6  # 增加换手率权重
         
-        # 1. 成交量得分（权重最高）
+        # 1. 成交量得分
         if volume_signals['is_confirm']:
             score += 1
         elif volume_signals['is_start']:
             score += 0.5
         
-        # 2. 涨停板得分（用总涨停次数判断）
+        # 2. 涨停板得分
         if limit_up_info['limit_up_count'] >= self.MIN_LIMIT_UP_COUNT:
             score += 1
         elif limit_up_info['limit_up_count'] >= 2:
             score += 0.5
         
-        # 3. 均线得分（包括多头排列和底部反转）
+        # 3. 均线得分
         if ma_info['is_aligned']:
             score += 1
         elif ma_info['is_bottom_reversal']:
-            # 底部反转也得分（根据强度）
             score += min(ma_info['reversal_strength'], 1.0)
         
         # 4. MACD得分
@@ -606,11 +680,17 @@ class MainWaveDetector:
         elif wave_strength['total_change'] >= self.MIN_TOTAL_CHANGE:
             score += 0.5
         
+        # 6. 换手率得分（新增）
+        if turnover_info.get('is_turnover_start', False):
+            score += 1
+        elif turnover_info.get('turnover_ratio', 0) >= 2.0:
+            score += 0.5
+        
         confidence = score / max_score
         
         # ==================== 阶段判断 ====================
         
-        # 1. 底部反转信号（优先级最高）
+        # 1. 底部反转信号
         if ma_info.get('is_bottom_reversal', False):
             reversal_strength = ma_info.get('reversal_strength', 0)
             if reversal_strength >= 0.8:
@@ -618,13 +698,15 @@ class MainWaveDetector:
             else:
                 return '🔄 底部反转', confidence, '底部放量涨停，反转迹象，密切关注'
         
-        # 2. 见顶信号判断（关键修复：使用最新单日涨幅）
-        # 条件1：成交量异常放大（≥7倍）
+        # 2. 见顶信号判断（加入换手率判断）
+        # 条件1：成交量异常放大（≥7倍）或 换手率异常放大（≥15%）
         # 条件2：最新单日涨幅<3%（滞涨）
-        # 条件3：或者最新涨幅<1%（明显滞涨）
-        if volume_signals['is_top']:
+        if volume_signals['is_top'] or turnover_info.get('is_turnover_top', False):
             latest_change = wave_strength.get('latest_change', 0)
             if latest_change < 1.0:
+                return '⚠️ 高位滞涨', confidence, '成交量/换手率异常放大+涨幅<1%，强烈见顶信号，建议减仓'
+            elif latest_change < 3.0:
+                return '⚠️ 见顶信号', confidence, '成交量/换手率放大+涨幅不足3%，见顶迹象，建议观望'
                 return '⚠️ 高位滞涨', confidence, '成交量异常放大+涨幅<1%，强烈见顶信号，建议减仓'
             elif latest_change < 3.0:
                 return '⚠️ 见顶信号', confidence, '成交量放大+涨幅不足3%，见顶迹象，建议观望'
@@ -818,8 +900,25 @@ def test_single_stock(stock_code: str = '605299'):
     print(f"\n【涨幅】")
     print(f"  总涨幅: {signals['wave_strength']['total_change']:.2f}%")
     print(f"  日均涨幅: {signals['wave_strength']['avg_daily_change']:.2f}%")
-    print(f"  最新涨幅: {signals['wave_strength'].get('latest_change', 0):.2f}%")  # 新增！
+    print(f"  最新涨幅: {signals['wave_strength'].get('latest_change', 0):.2f}%")
     print(f"  最大涨幅: {signals['wave_strength']['max_change']:.2f}%")
+    
+    # 换手率输出（新增）
+    print(f"\n【换手率】")
+    if 'turnover' in signals and signals['turnover']:
+        t = signals['turnover']
+        print(f"  蓄势期换手率: {t.get('accumulation_turnover', 0):.2f}%")
+        print(f"  最新换手率: {t.get('latest_turnover', 0):.2f}%")
+        print(f"  换手率放大: {t.get('turnover_ratio', 0):.2f}x")
+        print(f"  主升浪期均换手率: {t.get('avg_wave_turnover', 0):.2f}%")
+        if t.get('is_turnover_top', False):
+            print(f"  换手率状态: ⚠️ 异常放大（见顶信号）")
+        elif t.get('is_turnover_start', False):
+            print(f"  换手率状态: ✅ 启动放大")
+        else:
+            print(f"  换手率状态: ❌ 未放大")
+    else:
+        print(f"  无换手率数据")
     
     detector.close()
     
