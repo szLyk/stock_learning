@@ -1,421 +1,280 @@
 # -*- coding: utf-8 -*-
 """
-量价因子计算工具
-功能：基于成交量和价格计算量价因子，替代资金流向因子
+量价因子计算工具（改进版）
+功能：基于成交量和价格计算量价因子，科学评估量价关系
 
-数据源：Baostock（免费）
-因子逻辑：成交量放大 + 价格上涨 = 主力买入
+核心逻辑：量价组合矩阵评分（而非简单乘法）
 
-因子公式：
-  量价因子 = 成交量比率 × 价格变化
-  成交量比率 = 当前成交量 / 20 日平均成交量
-  价格变化 = (今日收盘价 - 昨日收盘价) / 昨日收盘价
+量价组合判断：
+  放量上涨 → 强多信号（主力进场）
+  缩量上涨 → 中多信号（筹码锁定，轻松拉升）
+  放量下跌 → 强空信号（主力出货/恐慌抛售）
+  缩量下跌 → 中空/中性（下跌动能衰竭，可能反弹）
+
+因子组成：
+  1. 成交量因子：放量程度（相对20日均量）
+  2. 价格因子：涨跌幅度 + 趋势强度
+  3. OBV因子：能量潮方向确认
+  4. 综合评分：矩阵组合 + OBV确认
 """
 
 import datetime
 import pandas as pd
 import numpy as np
+from concurrent.futures import as_completed, ThreadPoolExecutor
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
 
 
 class VolumePriceFactor:
-    """量价因子计算器（完全基于数据库数据）"""
-    
+    """量价因子计算器（改进版：矩阵评分逻辑）"""
+
+    # 量价组合评分矩阵（基础分）
+    # 行：成交量状态（放量/正常/缩量），列：价格状态（大涨/小涨/小跌/大跌）
+    VP_MATRIX = {
+        'volume_high':   {'price_big_up': 90, 'price_small_up': 75, 'price_small_down': 35, 'price_big_down': 15},  # 放量
+        'volume_normal': {'price_big_up': 70, 'price_small_up': 60, 'price_small_down': 40, 'price_big_down': 25},  # 正常
+        'volume_low':    {'price_big_up': 80, 'price_small_up': 65, 'price_small_down': 45, 'price_big_down': 30},  # 缩量
+    }
+
+    # 成交量状态阈值
+    VOL_HIGH_THRESHOLD = 1.5   # 放量：成交量比 > 1.5
+    VOL_LOW_THRESHOLD = 0.7    # 缩量：成交量比 < 0.7
+
+    # 价格变化阈值（百分比）
+    PRICE_BIG_UP_THRESHOLD = 3.0    # 大涨：> 3%
+    PRICE_SMALL_UP_THRESHOLD = 0.5  # 小涨：> 0.5%
+
     def __init__(self):
         self.logger = LogManager.get_logger("volume_price_factor")
-        self.mysql_manager = MySQLUtil()
-        self.mysql_manager.connect()
         self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
-    
-    # =====================================================
-    # 量价因子计算
-    # =====================================================
-    
-    def calculate_volume_ratio(self, stock_code, window=20):
+
+    def _classify_volume_state(self, volume_ratio: float) -> str:
+        """判断成交量状态"""
+        if volume_ratio > self.VOL_HIGH_THRESHOLD:
+            return 'volume_high'   # 放量
+        elif volume_ratio < self.VOL_LOW_THRESHOLD:
+            return 'volume_low'    # 缩量
+        else:
+            return 'volume_normal' # 正常
+
+    def _classify_price_state(self, price_change_pct: float) -> str:
+        """判断价格状态"""
+        if price_change_pct > self.PRICE_BIG_UP_THRESHOLD:
+            return 'price_big_up'
+        elif price_change_pct > self.PRICE_SMALL_UP_THRESHOLD:
+            return 'price_small_up'
+        elif price_change_pct < -self.PRICE_BIG_UP_THRESHOLD:
+            return 'price_big_down'
+        elif price_change_pct < -self.PRICE_SMALL_UP_THRESHOLD:
+            return 'price_small_down'
+        else:
+            return 'price_small_down'  # 微跌或持平归为小跌
+
+    def calculate_single_stock(self, stock_code: str) -> dict:
         """
-        计算成交量比率（从数据库直接查询）
-        :param stock_code: 股票代码（纯代码，如 600000）
-        :param window: 均量窗口
-        :return: 成交量比率
-        """
-        try:
-            # 直接从数据库查询日线数据
-            sql = """
-                SELECT stock_date, trading_volume
-                FROM stock.stock_history_date_price
-                WHERE stock_code = %s
-                ORDER BY stock_date DESC
-                LIMIT %s
-            """
-            result = self.mysql_manager.query_all(sql, (stock_code, window * 2))
-            
-            if not result:
-                self.logger.warning(f"未找到 {stock_code} 的日线数据")
-                return 1.0
-            
-            df = pd.DataFrame(result)
-            
-            # 数据清洗
-            df['trading_volume'] = pd.to_numeric(df['trading_volume'], errors='coerce')
-            df = df.dropna(subset=['trading_volume'])
-            
-            if df.empty:
-                return 1.0
-            
-            # 按日期排序
-            df = df.sort_values('stock_date').reset_index(drop=True)
-            
-            # 计算成交量均值
-            df['volume_ma'] = df['trading_volume'].rolling(window=window).mean()
-            
-            # 成交量比率
-            df['volume_ratio'] = df['trading_volume'] / df['volume_ma']
-            
-            # 返回最新值（转换为 float）
-            latest_ratio = df['volume_ratio'].iloc[-1]
-            
-            if pd.isna(latest_ratio) or latest_ratio == np.inf:
-                return 1.0  # 默认值
-            
-            return float(latest_ratio)
-            
-        except Exception as e:
-            self.logger.error(f"计算成交量比率失败 {stock_code}: {e}")
-            return 1.0
-    
-    def calculate_price_change(self, stock_code, window=1):
-        """
-        计算价格变化率（从数据库直接查询）
+        计算单只股票的量价因子（每个线程使用独立连接）
         :param stock_code: 股票代码
-        :param window: 计算 N 日变化率
-        :return: 价格变化率（百分比）
+        :return: 量价因子结果字典
         """
-        try:
-            # 直接从数据库查询日线数据
-            sql = """
-                SELECT stock_date, close_price
-                FROM stock.stock_history_date_price
-                WHERE stock_code = %s
-                ORDER BY stock_date DESC
-                LIMIT %s
-            """
-            result = self.mysql_manager.query_all(sql, (stock_code, window + 5))
-            
-            if not result:
-                self.logger.warning(f"未找到 {stock_code} 的日线数据")
-                return 0.0
-            
-            df = pd.DataFrame(result)
-            
-            # 数据清洗
-            df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
-            df = df.dropna(subset=['close_price'])
-            
-            if df.empty:
-                return 0.0
-            
-            # 按日期排序
-            df = df.sort_values('stock_date').reset_index(drop=True)
-            
-            # 价格变化率
-            df['price_change'] = df['close_price'].pct_change(periods=window)
-            
-            # 返回最新值（转换为 float）
-            latest_change = df['price_change'].iloc[-1]
-            
-            if pd.isna(latest_change):
-                return 0.0
-            
-            return float(latest_change) * 100  # 转换为百分比
-            
-        except Exception as e:
-            self.logger.error(f"计算价格变化率失败 {stock_code}: {e}")
-            return 0.0
-    
-    def calculate_turnover_rate(self, stock_code):
-        """
-        计算换手率（从数据库直接查询）
-        :param stock_code: 股票代码
-        :return: 换手率（百分比）
-        """
-        try:
-            # 直接从数据库查询最新换手率
-            sql = """
-                SELECT turn
-                FROM stock.stock_history_date_price
-                WHERE stock_code = %s
-                ORDER BY stock_date DESC
-                LIMIT 1
-            """
-            result = self.mysql_manager.query_one(sql, (stock_code,))
-            
-            if not result:
-                self.logger.warning(f"未找到 {stock_code} 的换手率数据")
-                return 0.0
-            
-            latest_turnover = result.get('turn', 0)
-            
-            if latest_turnover is None:
-                return 0.0
-            
-            return float(latest_turnover)
-            
-        except Exception as e:
-            self.logger.error(f"计算换手率失败 {stock_code}: {e}")
-            return 0.0
-    
-    def calculate_obv(self, stock_code, window=20):
-        """
-        从数据库获取 OBV 数据（已有计算）
-        :param stock_code: 股票代码
-        :param window: 计算 N 日 OBV 变化率
-        :return: OBV 变化率
-        """
-        try:
-            # 直接从数据库查询 OBV 数据
-            sql = """
-                SELECT stock_date, obv, `30ma_obv`
-                FROM stock.stock_date_obv
-                WHERE stock_code = %s
-                ORDER BY stock_date DESC
-                LIMIT %s
-            """
-            result = self.mysql_manager.query_all(sql, (stock_code, window * 2))
-            
-            if not result:
-                self.logger.warning(f"未找到 {stock_code} 的 OBV 数据")
-                return 0.0
-            
-            df = pd.DataFrame(result)
-            
-            # OBV 变化率
-            df['obv_change'] = df['obv'].pct_change(periods=window)
-            
-            latest_obv_change = df['obv_change'].iloc[-1]
-            
-            if pd.isna(latest_obv_change):
-                return 0.0
-            
-            return float(latest_obv_change) * 100  # 转换为百分比
-            
-        except Exception as e:
-            self.logger.error(f"获取 OBV 失败 {stock_code}: {e}")
-            return 0.0
-    
-    def calculate_volume_price_factor(self, stock_code, save_to_db=False):
-        """
-        计算量价因子（综合得分）
-        
-        公式：
-        量价因子 = 成交量比率 × 价格变化 × 换手率修正 × OBV 确认
-        
-        :param stock_code: 股票代码（纯代码）
-        :param save_to_db: 是否计算后立即保存到数据库
-        :return: 量价因子得分（标准化为 0-100），如果 save_to_db=True 则返回保存的行数
-        """
-        self.logger.info(f"计算量价因子：{stock_code}")
-        
-        try:
-            # 1. 计算成交量比率
-            volume_ratio = self.calculate_volume_ratio(stock_code)
-            
-            # 2. 计算价格变化率
-            price_change = self.calculate_price_change(stock_code)
-            
-            # 3. 计算换手率
-            turnover_rate = self.calculate_turnover_rate(stock_code)
-            
-            # 4. 计算 OBV 变化率
-            obv_change = self.calculate_obv(stock_code)
-            
-            # 5. 综合计算量价因子
-            # 基础公式：量价因子 = 成交量比率 × 价格变化
-            vp_raw = volume_ratio * price_change
-            
-            # 加入换手率修正（高换手率放大信号）
-            turnover_adjustment = 1 + (turnover_rate / 100) * 0.1
-            vp_adjusted = vp_raw * turnover_adjustment
-            
-            # 加入 OBV 确认（OBV 为正加强信号）
-            obv_adjustment = 1 + (obv_change / 100) * 0.1
-            vp_final = vp_adjusted * obv_adjustment
-            
-            # 6. 标准化为 0-100 分
-            # 假设正常范围：-10 到 +10，映射到 0-100
-            vp_score = 50 + vp_final * 5
-            vp_score = max(0, min(100, vp_score))  # 限制在 0-100
-            
-            self.logger.info(f"{stock_code}: 量价因子={vp_score:.2f} "
-                           f"(VR={volume_ratio:.2f}, PC={price_change:.2f}%, "
-                           f"TR={turnover_rate:.2f}%, OBV={obv_change:.2f}%)")
-            
-            result = {
-                'stock_code': stock_code,
-                'volume_price_score': vp_score,
-                'volume_ratio': volume_ratio,
-                'price_change': price_change,
-                'turnover_rate': turnover_rate,
-                'obv_change': obv_change,
-                'calc_date': self.now_date
-            }
-            
-            # 如果需要保存到数据库
-            if save_to_db:
-                rows = self.mysql_manager.batch_insert_or_update(
-                    'stock_factor_volume_price',
-                    pd.DataFrame([result]),
-                    ['stock_code', 'calc_date']
-                )
-                self.logger.info(f"✅ {stock_code} 已保存到数据库，{rows} 行")
-                return rows
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"计算量价因子失败 {stock_code}: {e}")
-            return None
-    
-    # =====================================================
-    # 批量计算
-    # =====================================================
-    
-    def get_stock_list(self):
-        """获取股票列表"""
-        sql = """
-        SELECT stock_code, stock_name 
-        FROM stock_basic 
-        WHERE stock_status = 1 
-        ORDER BY stock_code
-        """
-        result = self.mysql_manager.query_all(sql)
-        if not result:
-            return []
-        return result
-    
-    def calculate_batch(self, stock_codes=None, save_to_db=True):
-        """
-        批量计算量价因子
-        :param stock_codes: 股票代码列表，None 表示全部
-        :param save_to_db: 是否每计算一只股票就保存（推荐 True）
-        """
-        if stock_codes is None:
-            stock_list = self.get_stock_list()
-            stock_codes = [s['stock_code'] for s in stock_list]
-        
-        total = len(stock_codes)
-        self.logger.info(f"开始批量计算量价因子，共 {total} 只股票")
-        
-        results = []
-        success_count = 0
-        saved_count = 0
-        
-        for i, stock_code in enumerate(stock_codes, 1):
+        with MySQLUtil() as db:
             try:
-                # 计算并保存
-                result = self.calculate_volume_price_factor(stock_code, save_to_db=save_to_db)
-                if result:
-                    if save_to_db:
-                        saved_count += result  # result 是保存的行数
-                    else:
-                        results.append(result)
-                    success_count += 1
-                
-                if i % 100 == 0:
-                    if save_to_db:
-                        self.logger.info(f"已处理 {i}/{total}，成功 {success_count}，已保存 {saved_count} 条")
-                    else:
-                        self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                
-                # 控制频率
-                if i % 50 == 0:
-                    import time
-                    time.sleep(1)
-                    
+                # 1. 查询最近30天的日线数据（用于计算均量和涨跌幅）
+                sql_price = """
+                    SELECT stock_date, close_price, pre_close, trading_volume, turn
+                    FROM stock_history_date_price
+                    WHERE stock_code = %s AND tradestatus = 1
+                    ORDER BY stock_date DESC
+                    LIMIT 30
+                """
+                result = db.query_all(sql_price, (stock_code,))
+
+                if not result or len(result) < 20:
+                    self.logger.warning(f"{stock_code}: 数据不足20天，跳过")
+                    return None
+
+                df = pd.DataFrame(result)
+                df = df.sort_values('stock_date').reset_index(drop=True)
+
+                # 数据清洗
+                df['close_price'] = pd.to_numeric(df['close_price'], errors='coerce')
+                df['pre_close'] = pd.to_numeric(df['pre_close'], errors='coerce')
+                df['trading_volume'] = pd.to_numeric(df['trading_volume'], errors='coerce')
+                df = df.dropna(subset=['close_price', 'trading_volume'])
+
+                if df.empty or len(df) < 20:
+                    return None
+
+                # 2. 计算成交量比率
+                df['vol_ma_20'] = df['trading_volume'].rolling(window=20).mean()
+                df['volume_ratio'] = df['trading_volume'] / df['vol_ma_20']
+                latest_vol_ratio = df['volume_ratio'].iloc[-1]
+
+                if pd.isna(latest_vol_ratio) or latest_vol_ratio <= 0:
+                    latest_vol_ratio = 1.0
+
+                # 3. 计算价格变化率（今日涨幅）
+                latest_close = df['close_price'].iloc[-1]
+                latest_pre_close = df['pre_close'].iloc[-1] if df['pre_close'].iloc[-1] else df['close_price'].iloc[-2]
+                price_change_pct = (latest_close - latest_pre_close) / latest_pre_close * 100
+
+                if pd.isna(price_change_pct):
+                    price_change_pct = 0.0
+
+                # 4. 计算5日趋势强度（连续上涨/下跌）
+                df['price_change_5d'] = df['close_price'].pct_change(periods=5).iloc[-1] * 100
+                trend_5d = df['price_change_5d'].iloc[-1] if not pd.isna(df['price_change_5d'].iloc[-1]) else 0.0
+
+                # 5. 查询OBV数据
+                sql_obv = """
+                    SELECT obv, 30ma_obv
+                    FROM stock_date_obv
+                    WHERE stock_code = %s
+                    ORDER BY stock_date DESC
+                    LIMIT 5
+                """
+                obv_result = db.query_all(sql_obv, (stock_code,))
+                obv_signal = 0
+                obv_change = 0.0
+
+                if obv_result and len(obv_result) >= 2:
+                    obv_df = pd.DataFrame(obv_result)
+                    obv_df['obv'] = pd.to_numeric(obv_df['obv'], errors='coerce')
+                    obv_df['30ma_obv'] = pd.to_numeric(obv_df['30ma_obv'], errors='coerce')
+
+                    # OBV方向：当前OBV vs 30日均OBV
+                    latest_obv = obv_df['obv'].iloc[0]
+                    obv_ma = obv_df['30ma_obv'].iloc[0]
+                    if not pd.isna(latest_obv) and not pd.isna(obv_ma) and obv_ma > 0:
+                        obv_signal = 1 if latest_obv > obv_ma else -1
+                        obv_change = (latest_obv - obv_df['obv'].iloc[-1]) / obv_df['obv'].iloc[-1] * 100 if obv_df['obv'].iloc[-1] else 0
+
+                # 6. 查询换手率
+                latest_turnover = df['turn'].iloc[-1] if 'turn' in df.columns else 0
+                if pd.isna(latest_turnover):
+                    latest_turnover = 0.0
+                else:
+                    latest_turnover = float(latest_turnover)
+
+                # 7. 矩阵评分
+                vol_state = self._classify_volume_state(float(latest_vol_ratio))
+                price_state = self._classify_price_state(float(price_change_pct))
+                base_score = self.VP_MATRIX[vol_state][price_state]
+
+                # 8. OBV修正（±5分）
+                obv_adjust = obv_signal * 5
+                final_score = base_score + obv_adjust
+
+                # 9. 趋势修正（5日趋势加强/减弱）
+                if trend_5d > 5:
+                    final_score += 3  # 强势趋势加分
+                elif trend_5d < -5:
+                    final_score -= 3  # 弱势趋势减分
+
+                # 限制在0-100范围
+                final_score = max(0, min(100, final_score))
+
+                # 10. 构建结果
+                result = {
+                    'stock_code': stock_code,
+                    'calc_date': self.now_date,
+                    'volume_price_score': round(final_score, 2),
+                    'volume_ratio': round(float(latest_vol_ratio), 4),
+                    'price_change': round(float(price_change_pct), 4),
+                    'turnover_rate': round(latest_turnover, 4),
+                    'obv_change': round(float(obv_change), 4),
+                    'vol_state': vol_state,
+                    'price_state': price_state,
+                    'obv_signal': obv_signal,
+                    'trend_5d': round(float(trend_5d), 4)
+                }
+
+                self.logger.info(f"{stock_code}: 评分={final_score:.1f} "
+                               f"(量={vol_state} {latest_vol_ratio:.2f}, "
+                               f"价={price_state} {price_change_pct:.2f}%, "
+                               f"OBV={obv_signal})")
+
+                return result
+
             except Exception as e:
-                self.logger.error(f"处理 {stock_code} 失败：{e}")
-        
-        # 如果不实时保存，最后批量保存
-        if not save_to_db and results:
-            self.save_to_db(results)
-            saved_count = len(results)
-        
-        self.logger.info(f"量价因子计算完成：成功 {success_count}/{total}，保存 {saved_count} 条")
-        
-        return results if not save_to_db else saved_count
-    
-    # =====================================================
-    # 数据库操作
-    # =====================================================
-    
-    def save_to_db(self, results):
+                self.logger.error(f"{stock_code} 计算失败: {e}")
+                return None
+
+    def calculate_batch(self, max_workers: int = 10, save_to_db: bool = True) -> int:
         """
-        保存量价因子到数据库
-        :param results: 计算结果列表
+        批量计算量价因子（多线程）
+        :param max_workers: 线程数
+        :param save_to_db: 是否保存到数据库
+        :return: 成功计算的数量
         """
+        # 获取股票列表（独立连接）
+        with MySQLUtil() as db:
+            sql_stocks = """
+                SELECT DISTINCT stock_code
+                FROM stock_history_date_price
+                WHERE tradestatus = 1
+            """
+            stocks_result = db.query_all(sql_stocks)
+            stock_codes = [s['stock_code'] for s in stocks_result] if stocks_result else []
+
+        total = len(stock_codes)
+        self.logger.info(f"开始计算 {total} 只股票的量价因子")
+
+        success_count = 0
+        results = []
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self.calculate_single_stock, code): code
+                for code in stock_codes
+            }
+
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                        success_count += 1
+                except Exception as e:
+                    self.logger.error(f"{code} 异常: {e}")
+
+        self.logger.info(f"计算完成: 成功 {success_count}/{total}")
+
+        # 保存到数据库
+        if save_to_db and results:
+            self._save_results(results)
+
+        return success_count
+
+    def _save_results(self, results: list):
+        """保存结果到数据库"""
         if not results:
             return
-        
-        self.logger.info(f"保存 {len(results)} 条量价因子数据到数据库")
-        
-        # 转换为 DataFrame
+
         df = pd.DataFrame(results)
-        
-        # 批量插入或更新
-        try:
-            rows = self.mysql_manager.batch_insert_or_update(
+
+        # 只保留表需要的字段
+        columns = ['stock_code', 'calc_date', 'volume_price_score',
+                   'volume_ratio', 'price_change', 'turnover_rate', 'obv_change']
+        df_save = df[columns].copy()
+
+        with MySQLUtil() as db:
+            rows = db.batch_insert_or_update(
                 'stock_factor_volume_price',
-                df,
+                df_save,
                 ['stock_code', 'calc_date']
             )
-            self.logger.info(f"✅ 成功保存 {rows} 条数据")
-        except Exception as e:
-            self.logger.error(f"保存数据失败：{e}")
-            raise
-    
-    def close(self):
-        """关闭连接"""
-        self.mysql_manager.close()
+            self.logger.info(f"✅ 保存 {rows} 条数据到 stock_factor_volume_price")
 
 
-# =====================================================
-# 测试入口
-# =====================================================
+def calculate_volume_price_factor():
+    """便捷函数：计算所有股票的量价因子"""
+    calculator = VolumePriceFactor()
+    calculator.calculate_batch(save_to_db=True)
+
+
 if __name__ == '__main__':
-    analyzer = VolumePriceFactor()
-    
-    print("=" * 80)
-    print("测试量价因子计算（计算后自动保存）")
-    print("=" * 80)
-    
-    # 测试单只股票（自动保存）
-    test_stocks = ['600000', '000001', '300750']
-    
-    for stock in test_stocks:
-        print(f"\n【测试】{stock}")
-        print("-" * 80)
-        # 计算并保存到数据库
-        rows = analyzer.calculate_volume_price_factor(stock, save_to_db=True)
-        if rows:
-            print(f"  ✅ 已保存 {rows} 行")
-    
-    # 验证保存结果
-    print("\n" + "=" * 80)
-    print("验证保存结果")
-    print("=" * 80)
-    for stock in test_stocks:
-        sql = """
-            SELECT stock_code, calc_date, volume_price_score, volume_ratio, price_change
-            FROM stock_factor_volume_price
-            WHERE stock_code = %s AND calc_date = CURDATE()
-            ORDER BY create_time DESC
-            LIMIT 1
-        """
-        result = analyzer.mysql_manager.query_one(sql, (stock,))
-        if result:
-            print(f"  ✅ {stock}: 得分={result['volume_price_score']:.2f}, 日期={result['calc_date']}")
-        else:
-            print(f"  ❌ {stock}: 未找到保存的数据")
-    
-    analyzer.close()
-    print("\n测试完成！")
+    print("开始计算量价因子...")
+    calculate_volume_price_factor()
+    print("完成!")
