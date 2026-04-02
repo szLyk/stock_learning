@@ -39,17 +39,18 @@ class AkShareFetcher:
     # 资金流向数据
     # =====================================================
     
-    def fetch_moneyflow(self, stock_code, start_date=None, end_date=None):
+    def fetch_moneyflow(self, stock_code, start_date=None, end_date=None, max_retries=3):
         """
-        获取个股资金流向数据（AkShare）
-        
+        获取个股资金流向数据（AkShare，带重试）
+
         接口：ak.stock_individual_fund_flow（已修复：原 stock_fund_flow_individual 有 bug）
-        
+
         参数:
             stock_code: 股票代码（如 000001）
             start_date: 开始日期
             end_date: 结束日期
-        
+            max_retries: 最大重试次数
+
         返回:
             DataFrame with columns:
             - stock_code, stock_date
@@ -57,90 +58,99 @@ class AkShareFetcher:
             - main_net_in_rate（主力净流入率）, close_price, change_rate
         """
         self.logger.info(f"AkShare 获取资金流向：{stock_code}")
-        
-        try:
-            # 判断市场（6开头是上海，其他是深圳）
-            market = 'sh' if stock_code.startswith('6') else 'sz'
-            
-            # 使用正确的接口（原 stock_fund_flow_individual 有 bug）
-            df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
-            
-            if df.empty:
-                self.logger.warning(f"AkShare 无资金流向数据：{stock_code}")
-                return pd.DataFrame()
-            
-            # 重命名列（匹配数据库字段）- 注意：列名没有空格
-            rename_map = {
-                '日期': 'stock_date',
-                '收盘价': 'close_price',
-                '涨跌幅': 'change_rate',
-                '主力净流入-净额': 'main_net_in',
-                '主力净流入-净占比': 'main_net_in_rate',
-                '超大单净流入-净额': 'super_net_in',
-                '超大单净流入-净占比': 'super_net_in_rate',
-                '大单净流入-净额': 'big_net_in',
-                '大单净流入-净占比': 'big_net_in_rate',
-                '中单净流入-净额': 'mid_net_in',
-                '中单净流入-净占比': 'mid_net_in_rate',
-                '小单净流入-净额': 'small_net_in',
-                '小单净流入-净占比': 'small_net_in_rate',
-            }
-            
-            # 只重命名存在的列
-            existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
-            df = df.rename(columns=existing_cols)
-            
-            # 添加股票代码
-            df['stock_code'] = stock_code
-            
-            # 数据清洗
-            if 'stock_date' in df.columns:
-                df['stock_date'] = pd.to_datetime(df['stock_date']).dt.date
-            
-            numeric_cols = ['main_net_in', 'main_net_in_rate', 
-                          'super_net_in', 'super_net_in_rate',
-                          'big_net_in', 'big_net_in_rate',
-                          'mid_net_in', 'mid_net_in_rate',
-                          'small_net_in', 'small_net_in_rate',
-                          'close_price', 'change_rate']
-            
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # 选择需要的字段
-            result_cols = ['stock_code', 'stock_date', 'main_net_in', 'main_net_in_rate',
-                          'super_net_in', 'big_net_in', 'mid_net_in', 'small_net_in',
-                          'close_price', 'change_rate']
-            
-            result_cols = [col for col in result_cols if col in df.columns]
-            
-            # 日期筛选
-            if start_date and 'stock_date' in df.columns:
-                df = df[df['stock_date'] >= pd.to_datetime(start_date).date()]
-            if end_date and 'stock_date' in df.columns:
-                df = df[df['stock_date'] <= pd.to_datetime(end_date).date()]
-            
-            self.logger.info(f"AkShare 成功获取 {stock_code} 资金流向：{len(df)} 条")
-            return df[result_cols] if result_cols else pd.DataFrame()
-            
-        except Exception as e:
-            self.logger.error(f"AkShare 获取资金流向失败 {stock_code}: {e}")
-            return pd.DataFrame()
+
+        # 判断市场（6开头是上海，其他是深圳）
+        market = 'sh' if stock_code.startswith('6') else 'sz'
+
+        for attempt in range(max_retries):
+            try:
+                # 使用正确的接口（原 stock_fund_flow_individual 有 bug）
+                df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+
+                if df.empty:
+                    self.logger.warning(f"AkShare 无资金流向数据：{stock_code}")
+                    return pd.DataFrame()
+
+                # 重命名列（匹配数据库字段）- 注意：列名没有空格
+                rename_map = {
+                    '日期': 'stock_date',
+                    '收盘价': 'close_price',
+                    '涨跌幅': 'change_rate',
+                    '主力净流入-净额': 'main_net_in',
+                    '主力净流入-净占比': 'main_net_in_rate',
+                    '超大单净流入-净额': 'super_net_in',
+                    '超大单净流入-净占比': 'super_net_in_rate',
+                    '大单净流入-净额': 'big_net_in',
+                    '大单净流入-净占比': 'big_net_in_rate',
+                    '中单净流入-净额': 'mid_net_in',
+                    '中单净流入-净占比': 'mid_net_in_rate',
+                    '小单净流入-净额': 'small_net_in',
+                    '小单净流入-净占比': 'small_net_in_rate',
+                }
+
+                # 只重命名存在的列
+                existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
+                df = df.rename(columns=existing_cols)
+
+                # 添加股票代码
+                df['stock_code'] = stock_code
+
+                # 数据清洗
+                if 'stock_date' in df.columns:
+                    df['stock_date'] = pd.to_datetime(df['stock_date']).dt.date
+
+                numeric_cols = ['main_net_in', 'main_net_in_rate',
+                              'super_net_in', 'super_net_in_rate',
+                              'big_net_in', 'big_net_in_rate',
+                              'mid_net_in', 'mid_net_in_rate',
+                              'small_net_in', 'small_net_in_rate',
+                              'close_price', 'change_rate']
+
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                # 选择需要的字段
+                result_cols = ['stock_code', 'stock_date', 'main_net_in', 'main_net_in_rate',
+                              'super_net_in', 'big_net_in', 'mid_net_in', 'small_net_in',
+                              'close_price', 'change_rate']
+
+                result_cols = [col for col in result_cols if col in df.columns]
+
+                # 日期筛选
+                if start_date and 'stock_date' in df.columns:
+                    df = df[df['stock_date'] >= pd.to_datetime(start_date).date()]
+                if end_date and 'stock_date' in df.columns:
+                    df = df[df['stock_date'] <= pd.to_datetime(end_date).date()]
+
+                self.logger.info(f"AkShare 成功获取 {stock_code} 资金流向：{len(df)} 条")
+                return df[result_cols] if result_cols else pd.DataFrame()
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2  # 递增等待时间
+                    self.logger.warning(f"{stock_code} 请求失败，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    self.logger.error(f"AkShare 获取资金流向失败 {stock_code}: {e}")
+                    return pd.DataFrame()
+
+        return pd.DataFrame()
     
     # =====================================================
     # 股东人数数据
     # =====================================================
     
-    def fetch_shareholder(self, stock_code):
+    def fetch_shareholder(self, stock_code, max_retries=3):
         """
-        获取股东户数数据（AkShare）
-        
-        接口：ak.stock_zh_a_gdhs_detail_em（已修复：原 stock_shareholder_change_ths 返回的是股东变动，非股东户数）
-        
+        获取股东户数数据（AkShare，带重试）
+
+        接口：ak.stock_zh_a_gdhs_detail_em
+
         参数:
             stock_code: 股票代码
-        
+            max_retries: 最大重试次数
+
         返回:
             DataFrame with columns:
             - stock_code, report_date
@@ -148,234 +158,260 @@ class AkShareFetcher:
             - avg_hold_value, avg_hold_count, total_mv, total_share
         """
         self.logger.info(f"AkShare 获取股东户数：{stock_code}")
-        
-        try:
-            # 使用正确的接口：股东户数详情
-            df = ak.stock_zh_a_gdhs_detail_em(symbol=stock_code)
-            
-            if df.empty:
-                self.logger.warning(f"AkShare 无股东户数数据：{stock_code}")
-                return pd.DataFrame()
-            
-            # 重命名列（匹配数据库字段）
-            rename_map = {
-                '股东户数统计截止日': 'report_date',
-                '区间涨跌幅': 'period_change',
-                '股东户数-本次': 'shareholder_count',
-                '股东户数-上次': 'shareholder_count_prev',
-                '股东户数-增减': 'shareholder_change',
-                '股东户数-增减比例': 'shareholder_change_rate',
-                '户均持股市值': 'avg_hold_value',
-                '户均持股数量': 'avg_hold_count',
-                '总市值': 'total_mv',
-                '总股本': 'total_share',
-                '股本变动': 'share_change',
-                '股本变动原因': 'share_change_reason',
-                '股东户数公告日期': 'announce_date',
-                '代码': 'code',
-                '名称': 'name',
-            }
-            
-            # 只重命名存在的列
-            existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
-            df = df.rename(columns=existing_cols)
-            
-            # 添加股票代码（使用传入的参数）
-            df['stock_code'] = stock_code
-            
-            # 数据清洗
-            df['report_date'] = pd.to_datetime(df['report_date']).dt.date
-            if 'announce_date' in df.columns:
-                df['announce_date'] = pd.to_datetime(df['announce_date']).dt.date
-            
-            numeric_cols = ['shareholder_count', 'shareholder_count_prev', 
-                          'shareholder_change', 'shareholder_change_rate',
-                          'avg_hold_value', 'avg_hold_count', 
-                          'total_mv', 'total_share', 'period_change']
-            
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            result_cols = ['stock_code', 'report_date', 'shareholder_count',
-                          'shareholder_count_prev', 'shareholder_change', 'shareholder_change_rate',
-                          'avg_hold_value', 'avg_hold_count', 'total_mv', 'total_share',
-                          'announce_date']
-            
-            result_cols = [col for col in result_cols if col in df.columns]
-            
-            self.logger.info(f"AkShare 成功获取 {stock_code} 股东户数：{len(df)} 条")
-            return df[result_cols]
-            
-        except Exception as e:
-            self.logger.error(f"AkShare 获取股东户数失败 {stock_code}: {e}")
-            return pd.DataFrame()
+
+        for attempt in range(max_retries):
+            try:
+                # 使用正确的接口：股东户数详情
+                df = ak.stock_zh_a_gdhs_detail_em(symbol=stock_code)
+
+                if df.empty:
+                    self.logger.warning(f"AkShare 无股东户数数据：{stock_code}")
+                    return pd.DataFrame()
+
+                # 重命名列（匹配数据库字段）
+                rename_map = {
+                    '股东户数统计截止日': 'report_date',
+                    '区间涨跌幅': 'period_change',
+                    '股东户数-本次': 'shareholder_count',
+                    '股东户数-上次': 'shareholder_count_prev',
+                    '股东户数-增减': 'shareholder_change',
+                    '股东户数-增减比例': 'shareholder_change_rate',
+                    '户均持股市值': 'avg_hold_value',
+                    '户均持股数量': 'avg_hold_count',
+                    '总市值': 'total_mv',
+                    '总股本': 'total_share',
+                    '股本变动': 'share_change',
+                    '股本变动原因': 'share_change_reason',
+                    '股东户数公告日期': 'announce_date',
+                    '代码': 'code',
+                    '名称': 'name',
+                }
+
+                # 只重命名存在的列
+                existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
+                df = df.rename(columns=existing_cols)
+
+                # 添加股票代码（使用传入的参数）
+                df['stock_code'] = stock_code
+
+                # 数据清洗
+                df['report_date'] = pd.to_datetime(df['report_date']).dt.date
+                if 'announce_date' in df.columns:
+                    df['announce_date'] = pd.to_datetime(df['announce_date']).dt.date
+
+                numeric_cols = ['shareholder_count', 'shareholder_count_prev',
+                              'shareholder_change', 'shareholder_change_rate',
+                              'avg_hold_value', 'avg_hold_count',
+                              'total_mv', 'total_share', 'period_change']
+
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                result_cols = ['stock_code', 'report_date', 'shareholder_count',
+                              'shareholder_count_prev', 'shareholder_change', 'shareholder_change_rate',
+                              'avg_hold_value', 'avg_hold_count', 'total_mv', 'total_share',
+                              'announce_date']
+
+                result_cols = [col for col in result_cols if col in df.columns]
+
+                self.logger.info(f"AkShare 成功获取 {stock_code} 股东户数：{len(df)} 条")
+                return df[result_cols]
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    self.logger.warning(f"{stock_code} 请求失败，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    self.logger.error(f"AkShare 获取股东户数失败 {stock_code}: {e}")
+                    return pd.DataFrame()
+
+        return pd.DataFrame()
     
     # =====================================================
     # 概念板块数据
     # =====================================================
     
-    def fetch_concept(self, stock_code=None):
+    def fetch_concept(self, stock_code=None, max_retries=3):
         """
-        获取概念板块数据（AkShare）
-        
+        获取概念板块数据（AkShare，带重试）
+
         接口：
         - ak.stock_board_concept_name_em（获取所有概念列表）
         - ak.stock_board_concept_cons_em（获取概念成分股）
-        
+
         参数:
             stock_code: 股票代码（可选，不传则获取所有概念）
-        
+            max_retries: 最大重试次数
+
         返回:
             DataFrame with columns:
             - stock_code, concept_name, concept_type, is_hot
         """
         self.logger.info(f"AkShare 获取概念板块：{stock_code if stock_code else '全部'}")
-        
-        try:
-            if stock_code:
-                # 获取个股所属概念：遍历概念查找包含该股票的
-                # 先获取所有概念
-                all_concepts = ak.stock_board_concept_name_em()
-                
-                if all_concepts.empty:
+
+        for attempt in range(max_retries):
+            try:
+                if stock_code:
+                    # 获取个股所属概念：遍历概念查找包含该股票的
+                    # 先获取所有概念
+                    all_concepts = ak.stock_board_concept_name_em()
+
+                    if all_concepts.empty:
+                        return pd.DataFrame()
+
+                    data = []
+                    concept_col = '板块名称' if '板块名称' in all_concepts.columns else all_concepts.columns[0]
+
+                    # 遍历概念检查成分股（限制数量避免请求过多）
+                    for idx, row in all_concepts.head(100).iterrows():
+                        concept_name = row[concept_col]
+
+                        try:
+                            # 获取概念成分股
+                            component_df = ak.stock_board_concept_cons_em(symbol=concept_name)
+
+                            if not component_df.empty:
+                                code_col = '代码' if '代码' in component_df.columns else component_df.columns[0]
+                                if stock_code in component_df[code_col].astype(str).str.zfill(6).values:
+                                    data.append({
+                                        'stock_code': stock_code,
+                                        'concept_name': concept_name,
+                                        'concept_type': '主题',
+                                        'is_hot': 0,
+                                    })
+                        except:
+                            continue
+
+                        # 控制请求频率
+                        if idx % 5 == 0:
+                            time.sleep(0.5)
+
+                    if not data:
+                        self.logger.warning(f"AkShare 无概念板块数据：{stock_code}")
+                        return pd.DataFrame()
+
+                    df = pd.DataFrame(data)
+
+                else:
+                    # 获取所有概念板块
+                    df = ak.stock_board_concept_name_em()
+
+                    if df.empty:
+                        return pd.DataFrame()
+
+                    # 重命名列
+                    if '板块名称' in df.columns:
+                        df = df.rename(columns={'板块名称': 'concept_name'})
+                    df['concept_type'] = '主题'
+                    df['is_hot'] = 0
+
+                self.logger.info(f"AkShare 成功获取概念板块：{len(df)} 个")
+                return df
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 3  # 概念板块请求量大，等待更久
+                    self.logger.warning(f"概念板块请求失败，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    self.logger.error(f"AkShare 获取概念板块失败：{e}")
                     return pd.DataFrame()
-                
-                data = []
-                concept_col = '板块名称' if '板块名称' in all_concepts.columns else all_concepts.columns[0]
-                
-                # 遍历概念检查成分股（限制数量避免请求过多）
-                for idx, row in all_concepts.head(100).iterrows():
-                    concept_name = row[concept_col]
-                    
-                    try:
-                        # 获取概念成分股
-                        component_df = ak.stock_board_concept_cons_em(symbol=concept_name)
-                        
-                        if not component_df.empty:
-                            code_col = '代码' if '代码' in component_df.columns else component_df.columns[0]
-                            if stock_code in component_df[code_col].astype(str).str.zfill(6).values:
-                                data.append({
-                                    'stock_code': stock_code,
-                                    'concept_name': concept_name,
-                                    'concept_type': '主题',
-                                    'is_hot': 0,
-                                })
-                    except:
-                        continue
-                    
-                    # 控制请求频率
-                    if idx % 5 == 0:
-                        time.sleep(0.5)
-                
-                if not data:
-                    self.logger.warning(f"AkShare 无概念板块数据：{stock_code}")
-                    return pd.DataFrame()
-                
-                df = pd.DataFrame(data)
-                
-            else:
-                # 获取所有概念板块
-                df = ak.stock_board_concept_name_em()
-                
-                if df.empty:
-                    return pd.DataFrame()
-                
-                # 重命名列
-                if '板块名称' in df.columns:
-                    df = df.rename(columns={'板块名称': 'concept_name'})
-                df['concept_type'] = '主题'
-                df['is_hot'] = 0
-            
-            self.logger.info(f"AkShare 成功获取概念板块：{len(df)} 个")
-            return df
-            
-        except Exception as e:
-            self.logger.error(f"AkShare 获取概念板块失败：{e}")
-            return pd.DataFrame()
+
+        return pd.DataFrame()
     
     # =====================================================
     # 分析师评级数据
     # =====================================================
     
-    def fetch_analyst_rating(self, stock_code, start_date=None, end_date=None):
+    def fetch_analyst_rating(self, stock_code, start_date=None, end_date=None, max_retries=3):
         """
-        获取分析师评级数据（AkShare）
-        
+        获取分析师评级数据（AkShare，带重试）
+
         接口：ak.stock_research_report_em
-        
+
         参数:
             stock_code: 股票代码
             start_date: 开始日期
             end_date: 结束日期
-        
+            max_retries: 最大重试次数
+
         返回:
             DataFrame with columns:
             - stock_code, stock_name, publish_date
             - institution_name, analyst_name, rating_type, rating_score, target_price
         """
         self.logger.info(f"AkShare 获取分析师评级：{stock_code}")
-        
-        try:
-            # AkShare 接口（个股研报）
-            df = ak.stock_research_report_em(symbol=stock_code)
-            
-            if df.empty:
-                self.logger.warning(f"AkShare 无分析师评级数据：{stock_code}")
-                return pd.DataFrame()
-            
-            # 重命名列（AKShare 接口列名可能变化）
-            rename_map = {
-                '日期': 'publish_date',
-                '报告日期': 'publish_date',
-                '机构': 'institution_name',
-                '机构名称': 'institution_name',
-                '分析师': 'analyst_name',
-                '东财评级': 'rating_type',
-                '评级': 'rating_type',
-                '目标价': 'target_price',
-            }
-            
-            existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
-            df = df.rename(columns=existing_cols)
-            
-            # 添加股票代码
-            if 'stock_code' not in df.columns and '股票代码' in df.columns:
-                df['stock_code'] = df['股票代码'].astype(str).str.zfill(6)
-            else:
-                df['stock_code'] = stock_code
-            
-            # 数据清洗
-            if 'publish_date' in df.columns:
-                df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
-            
-            # 评级打分映射
-            rating_map = {'买入': 5.0, '增持': 4.0, '中性': 3.0, '减持': 2.0, '卖出': 1.0}
-            if 'rating_type' in df.columns:
-                df['rating_score'] = df['rating_type'].map(rating_map).fillna(3.0)
-            
-            numeric_cols = ['target_price', 'rating_score']
-            for col in numeric_cols:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            result_cols = ['stock_code', 'publish_date', 'institution_name',
-                          'analyst_name', 'rating_type', 'rating_score', 'target_price']
-            
-            result_cols = [col for col in result_cols if col in df.columns]
-            
-            # 日期筛选
-            if start_date:
-                df = df[df['publish_date'] >= pd.to_datetime(start_date).date()]
-            if end_date:
-                df = df[df['publish_date'] <= pd.to_datetime(end_date).date()]
-            
-            self.logger.info(f"AkShare 成功获取 {stock_code} 分析师评级：{len(df)} 条")
-            return df[result_cols]
-            
-        except Exception as e:
-            self.logger.error(f"AkShare 获取分析师评级失败 {stock_code}: {e}")
-            return pd.DataFrame()
+
+        for attempt in range(max_retries):
+            try:
+                # AkShare 接口（个股研报）
+                df = ak.stock_research_report_em(symbol=stock_code)
+
+                if df.empty:
+                    self.logger.warning(f"AkShare 无分析师评级数据：{stock_code}")
+                    return pd.DataFrame()
+
+                # 重命名列（AKShare 接口列名可能变化）
+                rename_map = {
+                    '日期': 'publish_date',
+                    '报告日期': 'publish_date',
+                    '机构': 'institution_name',
+                    '机构名称': 'institution_name',
+                    '分析师': 'analyst_name',
+                    '东财评级': 'rating_type',
+                    '评级': 'rating_type',
+                    '目标价': 'target_price',
+                }
+
+                existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
+                df = df.rename(columns=existing_cols)
+
+                # 添加股票代码
+                if 'stock_code' not in df.columns and '股票代码' in df.columns:
+                    df['stock_code'] = df['股票代码'].astype(str).str.zfill(6)
+                else:
+                    df['stock_code'] = stock_code
+
+                # 数据清洗
+                if 'publish_date' in df.columns:
+                    df['publish_date'] = pd.to_datetime(df['publish_date']).dt.date
+
+                # 评级打分映射
+                rating_map = {'买入': 5.0, '增持': 4.0, '中性': 3.0, '减持': 2.0, '卖出': 1.0}
+                if 'rating_type' in df.columns:
+                    df['rating_score'] = df['rating_type'].map(rating_map).fillna(3.0)
+
+                numeric_cols = ['target_price', 'rating_score']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                result_cols = ['stock_code', 'publish_date', 'institution_name',
+                              'analyst_name', 'rating_type', 'rating_score', 'target_price']
+
+                result_cols = [col for col in result_cols if col in df.columns]
+
+                # 日期筛选
+                if start_date:
+                    df = df[df['publish_date'] >= pd.to_datetime(start_date).date()]
+                if end_date:
+                    df = df[df['publish_date'] <= pd.to_datetime(end_date).date()]
+
+                self.logger.info(f"AkShare 成功获取 {stock_code} 分析师评级：{len(df)} 条")
+                return df[result_cols]
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = (attempt + 1) * 2
+                    self.logger.warning(f"{stock_code} 请求失败，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(wait_time)
+                else:
+                    self.logger.error(f"AkShare 获取分析师评级失败 {stock_code}: {e}")
+                    return pd.DataFrame()
+
+        return pd.DataFrame()
     
     # =====================================================
     # Redis 断点续传机制（参考 Baostock）
@@ -521,13 +557,18 @@ class AkShareFetcher:
                             self.update_record(stock_code, 'moneyflow', df['stock_date'].max())
                         success_count += 1
                     self.mark_as_processed(stock_code, 'moneyflow')
-                    
+
+                    # 每只股票都加延迟（避免请求过快被服务器断开）
+                    time.sleep(0.3)
+
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                    if i % 10 == 0:
-                        time.sleep(1)
+                        # 每50只额外休息
+                        time.sleep(2)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
+                    # 失败后额外等待
+                    time.sleep(1)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -574,13 +615,16 @@ class AkShareFetcher:
                             self.update_record(stock_code, 'shareholder', df['report_date'].max())
                         success_count += 1
                     self.mark_as_processed(stock_code, 'shareholder')
-                    
+
+                    # 每只股票都加延迟
+                    time.sleep(0.3)
+
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                    if i % 10 == 0:
-                        time.sleep(1)
+                        time.sleep(2)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
+                    time.sleep(1)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -625,13 +669,16 @@ class AkShareFetcher:
                         self.update_record(stock_code, 'concept', self.now_date)
                         success_count += 1
                     self.mark_as_processed(stock_code, 'concept')
-                    
-                    if i % 50 == 0:
+
+                    # 概念板块请求量大，需要更长延迟
+                    time.sleep(1)
+
+                    if i % 20 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                    if i % 10 == 0:
-                        time.sleep(1)
+                        time.sleep(3)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
+                    time.sleep(2)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -677,13 +724,16 @@ class AkShareFetcher:
                             self.update_record(stock_code, 'analyst', df['publish_date'].max())
                         success_count += 1
                     self.mark_as_processed(stock_code, 'analyst')
-                    
+
+                    # 每只股票都加延迟
+                    time.sleep(0.3)
+
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                    if i % 10 == 0:
-                        time.sleep(1)
+                        time.sleep(2)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
+                    time.sleep(1)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
