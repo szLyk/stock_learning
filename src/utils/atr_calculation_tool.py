@@ -83,8 +83,8 @@ class ATRCalculator:
 
                 # 2. 确定需要查询的数据范围（多取 period 天作为缓冲）
                 start_date_for_query = (
-                    datetime.datetime.strptime(last_date, '%Y-%m-%d') -
-                    datetime.timedelta(days=frequency * 2)
+                        datetime.datetime.strptime(last_date, '%Y-%m-%d') -
+                        datetime.timedelta(days=frequency * 2)
                 ).strftime('%Y-%m-%d')
 
                 # 3. 查询历史数据
@@ -102,7 +102,8 @@ class ATRCalculator:
                     self.logger.warning(f"股票 {stock_code} 无有效数据")
                     return 0
 
-                df = pd.DataFrame(result, columns=['stock_code', 'stock_date', 'high_price', 'low_price', 'close_price'])
+                df = pd.DataFrame(result,
+                                  columns=['stock_code', 'stock_date', 'high_price', 'low_price', 'close_price'])
 
                 if df.empty:
                     self.logger.warning(f"股票 {stock_code} 无有效交易数据")
@@ -286,6 +287,12 @@ def calculate_atr_for_all_stocks(date_type='d'):
     """
     calculator = ATRCalculator()
     calculator.calculate_all_stocks_atr(date_type)
+
+
+def run_batch_ma_all_time_period():
+    """批量处理所有时间段"""
+    for date_type in ['d', 'w', 'm']:
+        calculate_atr_for_all_stocks(date_type=date_type)
 
 
 if __name__ == '__main__':

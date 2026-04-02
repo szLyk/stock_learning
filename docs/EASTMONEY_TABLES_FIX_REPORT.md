@@ -155,7 +155,7 @@ mysql -h 192.168.1.109 -P 3306 -u root -p123456 stock -e "DESC stock_capital_flo
 
 ```bash
 cd /home/fan/.openclaw/workspace/stock_learning
-PYTHONPATH=/home/fan/.openclaw/workspace/stock_learning python3 tests/test_eastmoney_insert.py
+PYTHONPATH=/home/fan/.openclaw/workspace/stock_learning python3 tests/eastmoney_insert_test.py
 ```
 
 **预期输出**:
