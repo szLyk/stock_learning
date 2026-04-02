@@ -37,11 +37,41 @@ class MainWaveDetector:
     VOLUME_CONFIRM_RATIO = 3.0    # 确认信号：成交量放大≥3倍
     VOLUME_TOP_RATIO = 7.0        # 见顶信号：成交量放大≥7倍
     
-    # 换手率阈值（新增）
+    # 涢手率阈值（新增）
+    # 默认参数（通用）
     TURNOVER_ACCUMULATION_MAX = 3.0   # 蓄势期最高换手率（%）
     TURNOVER_START_MIN = 5.0          # 启动日最低换手率（%）
     TURNOVER_WAVE_MIN = 5.0           # 主升浪期平均换手率（%）
     TURNOVER_TOP_MIN = 15.0           # 见顶换手率阈值（%）
+    
+    # 分行业参数（基于特征分析结果）
+    INDUSTRY_PARAMS = {
+        '科技': {
+            'turnover_start': 6.0,
+            'turnover_confirm': 10.0,
+            'turnover_top': 16.0
+        },
+        '医药': {
+            'turnover_start': 3.7,
+            'turnover_confirm': 6.2,
+            'turnover_top': 10.0
+        },
+        '资源': {
+            'turnover_start': 5.5,
+            'turnover_confirm': 9.2,
+            'turnover_top': 15.0
+        },
+        '新能源': {
+            'turnover_start': 5.0,
+            'turnover_confirm': 8.0,
+            'turnover_top': 14.0
+        },
+        '其他': {
+            'turnover_start': 5.0,
+            'turnover_confirm': 8.0,
+            'turnover_top': 15.0
+        }
+    }
     
     # 涨停板参数
     LIMIT_UP_THRESHOLD = 9.5      # 涨停判断阈值（%）
@@ -64,6 +94,14 @@ class MainWaveDetector:
     
     # ==================================================
     
+    # 行业分类关键词
+    INDUSTRY_KEYWORDS = {
+        '科技': ['计算机', '通信', '电子', '软件', '半导体', '人工智能', '芯片', '信息技术'],
+        '资源': ['有色', '煤炭', '石油', '矿业', '稀土', '黄金', '铜', '锂矿'],
+        '新能源': ['锂电池', '光伏', '风电', '储能', '新能源车', '电池', '新能源'],
+        '医药': ['医药', '生物', '医疗', '制药', '中药', '器械']
+    }
+    
     def __init__(self):
         self.mysql = MySQLUtil()
         self.mysql.connect()
@@ -71,6 +109,25 @@ class MainWaveDetector:
     
     def close(self):
         self.mysql.close()
+    
+    def _get_industry_type(self, stock_code: str) -> str:
+        """获取股票的行业类型"""
+        sql = "SELECT industry FROM stock_industry WHERE stock_code = %s"
+        result = self.mysql.query_one(sql, (stock_code,))
+        
+        if not result or not result.get('industry'):
+            return '其他'
+        
+        industry = str(result['industry'])
+        for ind_type, keywords in self.INDUSTRY_KEYWORDS.items():
+            if any(k in industry for k in keywords):
+                return ind_type
+        
+        return '其他'
+    
+    def _get_industry_params(self, industry_type: str) -> dict:
+        """获取行业对应的参数"""
+        return self.INDUSTRY_PARAMS.get(industry_type, self.INDUSTRY_PARAMS['其他'])
     
     def get_stock_data(self, stock_code: str, days: int = 60, end_date: str = None) -> pd.DataFrame:
         """
@@ -440,9 +497,13 @@ class MainWaveDetector:
             'latest_macd': latest_macd
         }
     
-    def analyze_turnover(self, price_df: pd.DataFrame) -> dict:
+    def analyze_turnover(self, price_df: pd.DataFrame, industry_type: str = '其他') -> dict:
         """
-        分析换手率（新增）
+        分析换手率（支持分行业参数）
+        
+        Args:
+            price_df: 价格数据
+            industry_type: 行业类型
         
         Returns:
             {
@@ -451,7 +512,8 @@ class MainWaveDetector:
                 'turnover_ratio': float,         # 换手率放大倍数
                 'avg_wave_turnover': float,      # 主升浪期平均换手率
                 'is_turnover_start': bool,       # 是否换手率启动
-                'is_turnover_top': bool          # 是否换手率见顶
+                'is_turnover_top': bool,         # 是否换手率见顶
+                'industry_type': str             # 行业类型
             }
         """
         if price_df.empty or 'turnover_rate' not in price_df.columns:
@@ -461,8 +523,14 @@ class MainWaveDetector:
                 'turnover_ratio': 0,
                 'avg_wave_turnover': 0,
                 'is_turnover_start': False,
-                'is_turnover_top': False
+                'is_turnover_top': False,
+                'industry_type': industry_type
             }
+        
+        # 获取行业参数
+        params = self._get_industry_params(industry_type)
+        turnover_start_threshold = params['turnover_start']
+        turnover_top_threshold = params['turnover_top']
         
         # 蓄势期换手率（前10天）
         if len(price_df) >= self.ACCUMULATION_DAYS + 1:
@@ -482,15 +550,15 @@ class MainWaveDetector:
         else:
             avg_wave_turnover = price_df['turnover_rate'].mean()
         
-        # 判断换手率启动信号
+        # 判断换手率启动信号（使用行业参数）
         is_turnover_start = (
-            acc_turnover < self.TURNOVER_ACCUMULATION_MAX and
-            latest_turnover >= self.TURNOVER_START_MIN and
-            turnover_ratio >= 2.0
+            acc_turnover < turnover_start_threshold * 0.6 and  # 蓄势期换手率低于启动阈值的60%
+            latest_turnover >= turnover_start_threshold and    # 最新换手率达到启动阈值
+            turnover_ratio >= 1.5                              # 放大倍数≥1.5
         )
         
-        # 判断换手率见顶信号
-        is_turnover_top = latest_turnover >= self.TURNOVER_TOP_MIN
+        # 判断换手率见顶信号（使用行业参数）
+        is_turnover_top = latest_turnover >= turnover_top_threshold
         
         return {
             'accumulation_turnover': float(acc_turnover),
@@ -498,7 +566,10 @@ class MainWaveDetector:
             'turnover_ratio': float(turnover_ratio),
             'avg_wave_turnover': float(avg_wave_turnover),
             'is_turnover_start': is_turnover_start,
-            'is_turnover_top': is_turnover_top
+            'is_turnover_top': is_turnover_top,
+            'industry_type': industry_type,
+            'turnover_start_threshold': turnover_start_threshold,
+            'turnover_top_threshold': turnover_top_threshold
         }
     
     def calculate_wave_strength(self, price_df: pd.DataFrame) -> dict:
@@ -606,8 +677,9 @@ class MainWaveDetector:
         # 5. 涨幅分析
         wave_strength = self.calculate_wave_strength(price_df.tail(20))
         
-        # 6. 换手率分析（新增）
-        turnover_info = self.analyze_turnover(price_df)
+        # 6. 换手率分析（新增，支持分行业参数）
+        industry_type = self._get_industry_type(stock_code)
+        turnover_info = self.analyze_turnover(price_df, industry_type)
         
         # ==================== 综合判断 ====================
         
@@ -907,10 +979,13 @@ def test_single_stock(stock_code: str = '605299'):
     print(f"\n【换手率】")
     if 'turnover' in signals and signals['turnover']:
         t = signals['turnover']
+        print(f"  行业类型: {t.get('industry_type', '未知')}")
         print(f"  蓄势期换手率: {t.get('accumulation_turnover', 0):.2f}%")
         print(f"  最新换手率: {t.get('latest_turnover', 0):.2f}%")
         print(f"  换手率放大: {t.get('turnover_ratio', 0):.2f}x")
         print(f"  主升浪期均换手率: {t.get('avg_wave_turnover', 0):.2f}%")
+        print(f"  行业启动阈值: {t.get('turnover_start_threshold', 5.0):.1f}%")
+        print(f"  行业见顶阈值: {t.get('turnover_top_threshold', 15.0):.1f}%")
         if t.get('is_turnover_top', False):
             print(f"  换手率状态: ⚠️ 异常放大（见顶信号）")
         elif t.get('is_turnover_start', False):
