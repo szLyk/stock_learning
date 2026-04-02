@@ -559,16 +559,16 @@ class AkShareFetcher:
                     self.mark_as_processed(stock_code, 'moneyflow')
 
                     # 每只股票都加延迟（避免请求过快被服务器断开）
-                    time.sleep(0.3)
+                    time.sleep(0.8)
 
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
                         # 每50只额外休息
-                        time.sleep(2)
+                        time.sleep(3)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
                     # 失败后额外等待
-                    time.sleep(1)
+                    time.sleep(2)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -617,14 +617,14 @@ class AkShareFetcher:
                     self.mark_as_processed(stock_code, 'shareholder')
 
                     # 每只股票都加延迟
-                    time.sleep(0.3)
+                    time.sleep(0.8)
 
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(2)
+                        time.sleep(3)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    time.sleep(1)
+                    time.sleep(2)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -671,11 +671,11 @@ class AkShareFetcher:
                     self.mark_as_processed(stock_code, 'concept')
 
                     # 概念板块请求量大，需要更长延迟
-                    time.sleep(1)
+                    time.sleep(1.2)
 
                     if i % 20 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(3)
+                        time.sleep(5)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
                     time.sleep(2)
@@ -726,14 +726,14 @@ class AkShareFetcher:
                     self.mark_as_processed(stock_code, 'analyst')
 
                     # 每只股票都加延迟
-                    time.sleep(0.3)
+                    time.sleep(0.8)
 
                     if i % 50 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(2)
+                        time.sleep(3)
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    time.sleep(1)
+                    time.sleep(2)
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
