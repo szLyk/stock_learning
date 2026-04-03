@@ -307,7 +307,11 @@ class RigorousFeatureAnalyzer:
         
         # 3. 生成特征表
         df_features = pd.DataFrame(all_features)
-        
+
+        # 确保股票代码为6位字符串格式
+        if 'stock_code' in df_features.columns:
+            df_features['stock_code'] = df_features['stock_code'].astype(str).str.zfill(6)
+
         output_path = '/home/fan/.openclaw/workspace/stock_learning/data/stock_features_full.csv'
         df_features.to_csv(output_path, index=False, encoding='utf-8-sig')
         self.logger.info(f"\n特征数据已保存: {output_path}")

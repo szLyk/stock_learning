@@ -176,7 +176,11 @@ class VolumePriceDataExporter:
                 
                 if not df.empty:
                     all_dfs.append(df)
-                    
+
+                    # 确保股票代码为6位字符串格式
+                    if 'stock_code' in df.columns:
+                        df['stock_code'] = df['stock_code'].astype(str).str.zfill(6)
+
                     # 保存单文件
                     filename = f"{signal_key}_{period_name}.csv"
                     filepath = self.OUTPUT_DIR / filename
@@ -196,7 +200,9 @@ class VolumePriceDataExporter:
             # 从文件读取
             dfs = []
             for csv_file in self.OUTPUT_DIR.glob('*.csv'):
-                df = pd.read_csv(csv_file)
+                df = pd.read_csv(csv_file, dtype={'stock_code': str})
+                if 'stock_code' in df.columns:
+                    df['stock_code'] = df['stock_code'].astype(str).str.zfill(6)
                 dfs.append(df)
         
         if not dfs:
@@ -204,7 +210,11 @@ class VolumePriceDataExporter:
             return None
         
         merged_df = pd.concat(dfs, ignore_index=True)
-        
+
+        # 确保股票代码为6位字符串格式
+        if 'stock_code' in merged_df.columns:
+            merged_df['stock_code'] = merged_df['stock_code'].astype(str).str.zfill(6)
+
         # 保存合并文件
         merged_file = self.MERGED_DIR / 'all_signals.csv'
         merged_df.to_csv(merged_file, index=False, encoding='utf-8')
@@ -232,7 +242,9 @@ class VolumePriceDataExporter:
             if not merged_file.exists():
                 print("请先执行导出和合并")
                 return
-            df = pd.read_csv(merged_file)
+            df = pd.read_csv(merged_file, dtype={'stock_code': str})
+            if 'stock_code' in df.columns:
+                df['stock_code'] = df['stock_code'].astype(str).str.zfill(6)
         
         # 验证参数
         holding_days = 5

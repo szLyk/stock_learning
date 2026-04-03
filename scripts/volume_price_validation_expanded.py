@@ -103,11 +103,11 @@ class ExpandedFactorValidator:
     def close(self):
         self.mysql.close()
     
-    def fetch_batch(self, period_name: str, start: str, end: str, 
+    def fetch_batch(self, period_name: str, start: str, end: str,
                     drop_range: tuple, turn_max: float, cap_max: float) -> pd.DataFrame:
         """
         分批查询信号数据
-        
+
         Args:
             period_name: 时期名称
             start: 开始日期
@@ -115,65 +115,75 @@ class ExpandedFactorValidator:
             drop_range: 跌幅范围 (min, max)
             turn_max: 最大换手率
             cap_max: 最大市值（亿）
-        
+
         Returns:
             DataFrame
         """
         # 查询信号及关联数据
         # 使用次日开盘价作为买入基准价（消除未来函数）
+        # 流通市值实时计算：流通股本 = 成交量/换手率*100，市值 = 流通股本*收盘价/亿
         sql = f'''
-            SELECT 
+            SELECT
                 s.stock_code,
                 s.stock_date as signal_date,
                 s.ups_and_downs,
                 s.turn,
                 s.close_price as signal_close,
-                m.circ_cap_yi,
+                s.trading_volume,
+                s.high_price,
+                s.low_price,
+                -- 实时计算当日流通市值（亿），消除未来函数偏差
+                (s.trading_volume / s.turn * 100 * s.close_price / 100000000) as circ_cap_yi,
                 i.industry,
                 f1.open_price as buy_price,
                 f1.close_price as day1_close,
+                f1.high_price as day1_high,
+                f1.low_price as day1_low,
                 f2.close_price as day2_close,
                 f3.close_price as day3_close,
                 f4.close_price as day4_close,
                 f5.close_price as day5_close,
                 f10.close_price as day10_close
             FROM (
-                SELECT stock_code, stock_date, ups_and_downs, turn, close_price
+                SELECT stock_code, stock_date, ups_and_downs, turn, close_price,
+                       trading_volume, high_price, low_price
                 FROM stock_history_date_price
-                WHERE stock_date >= '{start}' 
+                WHERE stock_date >= '{start}'
                   AND stock_date <= '{end}'
                   AND tradestatus = 1
                   AND ups_and_downs > {drop_range[0]}
                   AND ups_and_downs < {drop_range[1]}
+                  AND turn > 0.1
                   AND turn < {turn_max}
             ) s
-            LEFT JOIN stock_market_cap_estimated m ON s.stock_code = m.stock_code
             LEFT JOIN stock_industry i ON s.stock_code = i.stock_code
-            LEFT JOIN stock_history_date_price f1 
-                ON f1.stock_code = s.stock_code 
-                AND f1.stock_date = DATE_ADD(s.stock_date, INTERVAL 1 DAY) 
+            LEFT JOIN stock_history_date_price f1
+                ON f1.stock_code = s.stock_code
+                AND f1.stock_date = DATE_ADD(s.stock_date, INTERVAL 1 DAY)
                 AND f1.tradestatus = 1
-            LEFT JOIN stock_history_date_price f2 
-                ON f2.stock_code = s.stock_code 
-                AND f2.stock_date = DATE_ADD(s.stock_date, INTERVAL 2 DAY) 
+            LEFT JOIN stock_history_date_price f2
+                ON f2.stock_code = s.stock_code
+                AND f2.stock_date = DATE_ADD(s.stock_date, INTERVAL 2 DAY)
                 AND f2.tradestatus = 1
-            LEFT JOIN stock_history_date_price f3 
-                ON f3.stock_code = s.stock_code 
-                AND f3.stock_date = DATE_ADD(s.stock_date, INTERVAL 3 DAY) 
+            LEFT JOIN stock_history_date_price f3
+                ON f3.stock_code = s.stock_code
+                AND f3.stock_date = DATE_ADD(s.stock_date, INTERVAL 3 DAY)
                 AND f3.tradestatus = 1
-            LEFT JOIN stock_history_date_price f4 
-                ON f4.stock_code = s.stock_code 
-                AND f4.stock_date = DATE_ADD(s.stock_date, INTERVAL 4 DAY) 
+            LEFT JOIN stock_history_date_price f4
+                ON f4.stock_code = s.stock_code
+                AND f4.stock_date = DATE_ADD(s.stock_date, INTERVAL 4 DAY)
                 AND f4.tradestatus = 1
-            LEFT JOIN stock_history_date_price f5 
-                ON f5.stock_code = s.stock_code 
-                AND f5.stock_date = DATE_ADD(s.stock_date, INTERVAL 5 DAY) 
+            LEFT JOIN stock_history_date_price f5
+                ON f5.stock_code = s.stock_code
+                AND f5.stock_date = DATE_ADD(s.stock_date, INTERVAL 5 DAY)
                 AND f5.tradestatus = 1
-            LEFT JOIN stock_history_date_price f10 
-                ON f10.stock_code = s.stock_code 
-                AND f10.stock_date = DATE_ADD(s.stock_date, INTERVAL 10 DAY) 
+            LEFT JOIN stock_history_date_price f10
+                ON f10.stock_code = s.stock_code
+                AND f10.stock_date = DATE_ADD(s.stock_date, INTERVAL 10 DAY)
                 AND f10.tradestatus = 1
-            WHERE m.circ_cap_yi < {cap_max}
+            -- 使用实时计算的市值筛选，而非静态市值表
+            WHERE (s.trading_volume / s.turn * 100 * s.close_price / 100000000) < {cap_max}
+              AND (s.trading_volume / s.turn * 100 * s.close_price / 100000000) > 1
         '''
         
         result = self.mysql.query_all(sql)
@@ -186,23 +196,36 @@ class ExpandedFactorValidator:
             return pd.DataFrame()
     
     def calculate_returns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """计算收益（使用次日开盘价作为买入价）"""
+        """计算收益（使用次日开盘价作为买入价，剔除无法买入的样本）"""
         if df.empty:
             return df
-        
-        # 买入价 = 次日开盘价（如果没有，用收盘价保守估算）
-        df['buy_price'] = df['buy_price'].fillna(df['day1_close'])
-        
+
+        # 剔除买入价缺失的样本（无法交易：停牌、一字板等）
+        # 不再使用收盘价填充，避免偏差
+        df = df[df['buy_price'].notna() & (df['buy_price'] > 0)].copy()
+
+        # 判断涨跌停情况（使用相对阈值，避免价格差异影响）
+        # 次日涨停特征：开盘价≈收盘价≈最高价，日内振幅极小
+        df['day1_range'] = (df['day1_high'] - df['day1_low']) / df['buy_price'] * 100
+        df['is_limit_up'] = df['day1_range'] < 0.5  # 日内振幅<0.5%，疑似涨停
+
+        # 信号日跌停特征：最高价≈收盘价，日内振幅极小
+        df['signal_range'] = (df['high_price'] - df['low_price']) / df['signal_close'] * 100
+        df['signal_limit_down'] = df['signal_range'] < 0.5  # 日内振幅<0.5%，疑似跌停
+
+        # 剔除涨跌停样本
+        df = df[~df['is_limit_up'] & ~df['signal_limit_down']].copy()
+
         # 计算各持仓期收益
         for days in [1, 2, 3, 4, 5, 10]:
             col = f'day{days}_close'
             ret_col = f'return_{days}d'
             df[ret_col] = np.where(
-                (df[col].notna()) & (df['buy_price'].notna()) & (df['buy_price'] > 0),
+                (df[col].notna()) & (df['buy_price'] > 0),
                 (df[col] / df['buy_price'] - 1) * 100,
                 np.nan
             )
-        
+
         return df
     
     def run_validation(self, filter_key: str = 'base', cap_key: str = 'combined'):
@@ -250,7 +273,11 @@ class ExpandedFactorValidator:
         
         merged_df = pd.concat(all_dfs, ignore_index=True)
         merged_df = self.calculate_returns(merged_df)
-        
+
+        # 确保股票代码为6位字符串格式
+        if 'stock_code' in merged_df.columns:
+            merged_df['stock_code'] = merged_df['stock_code'].astype(str).str.zfill(6)
+
         # 保存合并数据
         output_file = self.OUTPUT_DIR / f'merged_{filter_key}_{cap_key}.csv'
         merged_df.to_csv(output_file, index=False, encoding='utf-8')
@@ -263,19 +290,20 @@ class ExpandedFactorValidator:
     
     def validate_all(self, df: pd.DataFrame, filter_name: str, cap_max: float):
         """整体验证"""
-        
+
         # 基础统计
         print(f"\n{'='*75}")
         print("一、基础统计")
         print("=" * 75)
-        
+
         print(f"\n筛选条件: {filter_name}")
-        print(f"市值范围: <{cap_max}亿")
-        print(f"总样本数: {len(df)}")
-        
+        print(f"市值范围: <{cap_max}亿（实时计算，消除未来函数偏差）")
+        print(f"有效样本数: {len(df)}")
+        print(f"说明: 已剔除次日开盘价缺失、涨停无法买入、信号日跌停样本")
+
         # 有效样本（有5日收益数据）
         valid_5d = df[df['return_5d'].notna()]
-        print(f"有效样本(5日): {len(valid_5d)}")
+        print(f"完整5日数据: {len(valid_5d)}")
         
         # 2. 整体胜率
         print(f"\n{'='*75}")
@@ -383,13 +411,13 @@ class ExpandedFactorValidator:
         if '5d' in results:
             wr = results['5d']['win_rate']
             ar = results['5d']['avg_return']
-            
+
             if wr >= 60:
-                status = "✅ 有效因子"
+                status = "[有效因子]"
             elif wr >= 55:
-                status = "➡️ 弱有效"
+                status = "[弱有效]"
             else:
-                status = "⚠️ 效果一般"
+                status = "[效果一般]"
             
             print(f"\n5日持仓整体效果: {status}")
             print(f"  胜率: {wr:.1f}%")

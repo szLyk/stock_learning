@@ -92,7 +92,9 @@ class MarketIndicatorBacktest:
     def load_signals(self) -> pd.DataFrame:
         """加载因子信号数据"""
         # 使用之前生成的合并数据
-        df = pd.read_csv('data/expanded_signals/merged_relaxed_combined.csv')
+        df = pd.read_csv('data/expanded_signals/merged_relaxed_combined.csv', dtype={'stock_code': str})
+        if 'stock_code' in df.columns:
+            df['stock_code'] = df['stock_code'].astype(str).str.zfill(6)
         df['signal_date'] = pd.to_datetime(df['signal_date'])
         
         # 排除近期数据
