@@ -19,6 +19,7 @@ AkShare 数据采集工具
 import datetime
 import pandas as pd
 import time
+import random
 import akshare as ak
 from logs.logger import LogManager
 from src.utils.mysql_tool import MySQLUtil
@@ -27,23 +28,23 @@ from src.utils.redis_tool import RedisUtil
 
 class AkShareFetcher:
     """AkShare 数据采集器（支持 Redis 断点续传）"""
-    
+
     def __init__(self):
         self.logger = LogManager.get_logger("akshare_fetcher")
         self.mysql_manager = MySQLUtil()
         self.mysql_manager.connect()
         self.redis_manager = RedisUtil() if RedisUtil else None
         self.now_date = datetime.datetime.now().strftime('%Y-%m-%d')
-    
+
     # =====================================================
     # 资金流向数据
     # =====================================================
-    
+
     def fetch_moneyflow(self, stock_code, start_date=None, end_date=None, max_retries=3):
         """
         获取个股资金流向数据（AkShare，带重试）
 
-        接口：ak.stock_individual_fund_flow（已修复：原 stock_fund_flow_individual 有 bug）
+        接口：ak.stock_individual_fund_flow
 
         参数:
             stock_code: 股票代码（如 000001）
@@ -64,8 +65,16 @@ class AkShareFetcher:
 
         for attempt in range(max_retries):
             try:
-                # 使用正确的接口（原 stock_fund_flow_individual 有 bug）
                 df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+
+                # 检查返回值类型
+                if df is None:
+                    self.logger.warning(f"AkShare 无资金流向数据：{stock_code}")
+                    return pd.DataFrame()
+
+                if not isinstance(df, pd.DataFrame):
+                    self.logger.warning(f"AkShare 返回异常数据：{stock_code}")
+                    return pd.DataFrame()
 
                 if df.empty:
                     self.logger.warning(f"AkShare 无资金流向数据：{stock_code}")
@@ -128,9 +137,9 @@ class AkShareFetcher:
 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    wait_time = (attempt + 1) * 2  # 递增等待时间
-                    self.logger.warning(f"{stock_code} 请求失败，{wait_time}秒后重试 ({attempt+1}/{max_retries}): {e}")
-                    time.sleep(wait_time)
+                    wait = random.uniform(2, 5)
+                    self.logger.warning(f"{stock_code} 请求失败，{wait:.1f}秒后重试: {e}")
+                    time.sleep(wait)
                 else:
                     self.logger.error(f"AkShare 获取资金流向失败 {stock_code}: {e}")
                     return pd.DataFrame()
@@ -163,6 +172,15 @@ class AkShareFetcher:
             try:
                 # 使用正确的接口：股东户数详情
                 df = ak.stock_zh_a_gdhs_detail_em(symbol=stock_code)
+
+                # 检查返回值类型（API可能返回dict错误信息）
+                if df is None:
+                    self.logger.warning(f"AkShare 无股东户数数据：{stock_code}")
+                    return pd.DataFrame()
+
+                if not isinstance(df, pd.DataFrame):
+                    self.logger.warning(f"AkShare 返回异常数据：{stock_code}")
+                    return pd.DataFrame()
 
                 if df.empty:
                     self.logger.warning(f"AkShare 无股东户数数据：{stock_code}")
@@ -207,6 +225,13 @@ class AkShareFetcher:
                 for col in numeric_cols:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
+
+                # 限制数值范围，防止数据库字段溢出
+                # DECIMAL(15,4) 最大值约为 9999999999999.9999
+                max_value = 1e14
+                for col in ['shareholder_change', 'shareholder_change_rate']:
+                    if col in df.columns:
+                        df[col] = df[col].clip(-max_value, max_value)
 
                 result_cols = ['stock_code', 'report_date', 'shareholder_count',
                               'shareholder_count_prev', 'shareholder_change', 'shareholder_change_rate',
@@ -258,7 +283,7 @@ class AkShareFetcher:
                     # 先获取所有概念
                     all_concepts = ak.stock_board_concept_name_em()
 
-                    if all_concepts.empty:
+                    if all_concepts is None or not isinstance(all_concepts, pd.DataFrame) or all_concepts.empty:
                         return pd.DataFrame()
 
                     data = []
@@ -272,7 +297,7 @@ class AkShareFetcher:
                             # 获取概念成分股
                             component_df = ak.stock_board_concept_cons_em(symbol=concept_name)
 
-                            if not component_df.empty:
+                            if component_df is not None and isinstance(component_df, pd.DataFrame) and not component_df.empty:
                                 code_col = '代码' if '代码' in component_df.columns else component_df.columns[0]
                                 if stock_code in component_df[code_col].astype(str).str.zfill(6).values:
                                     data.append({
@@ -298,7 +323,7 @@ class AkShareFetcher:
                     # 获取所有概念板块
                     df = ak.stock_board_concept_name_em()
 
-                    if df.empty:
+                    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
                         return pd.DataFrame()
 
                     # 重命名列
@@ -324,7 +349,7 @@ class AkShareFetcher:
     # =====================================================
     # 分析师评级数据
     # =====================================================
-    
+
     def fetch_analyst_rating(self, stock_code, start_date=None, end_date=None, max_retries=3):
         """
         获取分析师评级数据（AkShare，带重试）
@@ -338,9 +363,9 @@ class AkShareFetcher:
             max_retries: 最大重试次数
 
         返回:
-            DataFrame with columns:
-            - stock_code, stock_name, publish_date
-            - institution_name, analyst_name, rating_type, rating_score, target_price
+            tuple: (rating_df, forecast_df)
+            - rating_df: 评级信息 DataFrame
+            - forecast_df: 盈利预测 DataFrame
         """
         self.logger.info(f"AkShare 获取分析师评级：{stock_code}")
 
@@ -349,20 +374,32 @@ class AkShareFetcher:
                 # AkShare 接口（个股研报）
                 df = ak.stock_research_report_em(symbol=stock_code)
 
+                # 检查返回值类型（API可能返回dict错误信息）
+                if df is None:
+                    self.logger.warning(f"AkShare 无分析师评级数据：{stock_code}")
+                    return pd.DataFrame(), pd.DataFrame()
+
+                if not isinstance(df, pd.DataFrame):
+                    self.logger.warning(f"AkShare 返回异常数据：{stock_code}, type={type(df)}")
+                    return pd.DataFrame(), pd.DataFrame()
+
                 if df.empty:
                     self.logger.warning(f"AkShare 无分析师评级数据：{stock_code}")
-                    return pd.DataFrame()
+                    return pd.DataFrame(), pd.DataFrame()
 
-                # 重命名列（AKShare 接口列名可能变化）
+                # 保存原始列名用于提取盈利预测
+                original_cols = df.columns.tolist()
+
+                # 重命名列（评级相关）
                 rename_map = {
                     '日期': 'publish_date',
-                    '报告日期': 'publish_date',
                     '机构': 'institution_name',
-                    '机构名称': 'institution_name',
-                    '分析师': 'analyst_name',
                     '东财评级': 'rating_type',
-                    '评级': 'rating_type',
-                    '目标价': 'target_price',
+                    '近一月个股研报数': 'research_count',
+                    '行业': 'industry',
+                    '报告名称': 'report_name',
+                    '报告PDF链接': 'report_link',
+                    '股票简称': 'stock_name',
                 }
 
                 existing_cols = {k: v for k, v in rename_map.items() if k in df.columns}
@@ -383,24 +420,74 @@ class AkShareFetcher:
                 if 'rating_type' in df.columns:
                     df['rating_score'] = df['rating_type'].map(rating_map).fillna(3.0)
 
-                numeric_cols = ['target_price', 'rating_score']
+                # 数值字段转换
+                numeric_cols = ['rating_score', 'research_count']
                 for col in numeric_cols:
                     if col in df.columns:
                         df[col] = pd.to_numeric(df[col], errors='coerce')
 
-                result_cols = ['stock_code', 'publish_date', 'institution_name',
-                              'analyst_name', 'rating_type', 'rating_score', 'target_price']
+                # ===== 1. 评级信息 =====
+                rating_cols = ['stock_code', 'publish_date', 'institution_name',
+                              'stock_name', 'rating_type', 'rating_score',
+                              'research_count', 'industry', 'report_name', 'report_link']
+                rating_cols = [col for col in rating_cols if col in df.columns]
+                rating_df = df[rating_cols].copy()
 
-                result_cols = [col for col in result_cols if col in df.columns]
+                # ===== 2. 盈利预测信息 =====
+                forecast_data = []
+                # 匹配年份列名模式：2025-盈利预测-收益, 2025-盈利预测-市盈率
+                year_pattern = r'(\d{4})-盈利预测-(收益|市盈率)'
+                import re
+
+                for col in original_cols:
+                    match = re.match(year_pattern, col)
+                    if match:
+                        year = int(match.group(1))
+                        metric = match.group(2)
+
+                        # 映射到字段名
+                        if metric == '收益':
+                            metric_name = 'forecast_eps'
+                        elif metric == '市盈率':
+                            metric_name = 'forecast_pe'
+                        else:
+                            continue
+
+                        # 重命名原始列
+                        df_temp = df.rename(columns={col: metric_name})
+
+                        for _, row in df_temp.iterrows():
+                            if pd.notna(row.get(metric_name)):
+                                forecast_data.append({
+                                    'stock_code': row['stock_code'],
+                                    'institution_name': row['institution_name'],
+                                    'publish_date': row['publish_date'],
+                                    'forecast_year': year,
+                                    metric_name: row[metric_name]
+                                })
+
+                # 合并同一年的EPS和PE
+                if forecast_data:
+                    forecast_df = pd.DataFrame(forecast_data)
+                    forecast_df = forecast_df.groupby(
+                        ['stock_code', 'institution_name', 'publish_date', 'forecast_year'],
+                        as_index=False
+                    ).first()
+                else:
+                    forecast_df = pd.DataFrame()
 
                 # 日期筛选
                 if start_date:
-                    df = df[df['publish_date'] >= pd.to_datetime(start_date).date()]
+                    rating_df = rating_df[rating_df['publish_date'] >= pd.to_datetime(start_date).date()]
+                    if not forecast_df.empty:
+                        forecast_df = forecast_df[forecast_df['publish_date'] >= pd.to_datetime(start_date).date()]
                 if end_date:
-                    df = df[df['publish_date'] <= pd.to_datetime(end_date).date()]
+                    rating_df = rating_df[rating_df['publish_date'] <= pd.to_datetime(end_date).date()]
+                    if not forecast_df.empty:
+                        forecast_df = forecast_df[forecast_df['publish_date'] <= pd.to_datetime(end_date).date()]
 
-                self.logger.info(f"AkShare 成功获取 {stock_code} 分析师评级：{len(df)} 条")
-                return df[result_cols]
+                self.logger.info(f"AkShare 成功获取 {stock_code} 分析师评级：{len(rating_df)} 条，盈利预测：{len(forecast_df)} 条")
+                return rating_df, forecast_df
 
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -409,9 +496,9 @@ class AkShareFetcher:
                     time.sleep(wait_time)
                 else:
                     self.logger.error(f"AkShare 获取分析师评级失败 {stock_code}: {e}")
-                    return pd.DataFrame()
+                    return pd.DataFrame(), pd.DataFrame()
 
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     
     # =====================================================
     # Redis 断点续传机制（参考 Baostock）
@@ -558,17 +645,17 @@ class AkShareFetcher:
                         success_count += 1
                     self.mark_as_processed(stock_code, 'moneyflow')
 
-                    # 每只股票都加延迟（避免请求过快被服务器断开）
-                    time.sleep(0.8)
+                    # 随机延迟 1-2 秒（避免请求过快被服务器断开）
+                    time.sleep(random.uniform(1, 2))
 
-                    if i % 50 == 0:
+                    if i % 30 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        # 每50只额外休息
-                        time.sleep(3)
+                        # 每30只额外休息 5-8 秒
+                        time.sleep(random.uniform(5, 8))
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    # 失败后额外等待
-                    time.sleep(2)
+                    # 失败后额外等待 3-5 秒
+                    time.sleep(random.uniform(3, 5))
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -580,9 +667,9 @@ class AkShareFetcher:
             
             retry_count += 1
             if retry_count <= max_retries:
-                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
-                time.sleep(5)
-        
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，30 秒后重试...")
+                time.sleep(30)
+
         self.logger.error("❌ 达到最大重试次数，资金流向采集结束")
     
     def fetch_shareholder_batch(self, stock_codes=None, max_retries=3):
@@ -616,15 +703,16 @@ class AkShareFetcher:
                         success_count += 1
                     self.mark_as_processed(stock_code, 'shareholder')
 
-                    # 每只股票都加延迟
-                    time.sleep(0.8)
+                    # 随机延迟 1-2 秒
+                    time.sleep(random.uniform(1, 2))
 
-                    if i % 50 == 0:
+                    if i % 30 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(3)
+                        # 每30只额外休息 5-8 秒
+                        time.sleep(random.uniform(5, 8))
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    time.sleep(2)
+                    time.sleep(random.uniform(3, 5))
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -635,9 +723,9 @@ class AkShareFetcher:
             
             retry_count += 1
             if retry_count <= max_retries:
-                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
-                time.sleep(5)
-        
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，30 秒后重试...")
+                time.sleep(30)
+
         self.logger.error("❌ 达到最大重试次数，股东人数采集结束")
     
     def fetch_concept_batch(self, stock_codes=None, max_retries=3):
@@ -670,15 +758,16 @@ class AkShareFetcher:
                         success_count += 1
                     self.mark_as_processed(stock_code, 'concept')
 
-                    # 概念板块请求量大，需要更长延迟
-                    time.sleep(1.2)
+                    # 概念板块请求量大，随机延迟 1.5-2.5 秒
+                    time.sleep(random.uniform(1.5, 2.5))
 
                     if i % 20 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(5)
+                        # 每20只额外休息 8-12 秒
+                        time.sleep(random.uniform(8, 12))
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    time.sleep(2)
+                    time.sleep(random.uniform(5, 8))
             
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
             
@@ -689,15 +778,15 @@ class AkShareFetcher:
             
             retry_count += 1
             if retry_count <= max_retries:
-                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
-                time.sleep(5)
-        
+                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，60 秒后重试...")
+                time.sleep(60)
+
         self.logger.error("❌ 达到最大重试次数，概念板块采集结束")
     
     def fetch_analyst_batch(self, stock_codes=None, max_retries=3):
         """
         批量获取分析师评级（支持断点续传）
-        
+
         :param stock_codes: 股票代码列表，None 表示自动从 Redis/数据库获取
         :param max_retries: 最大重试次数，默认 3 次
         """
@@ -706,48 +795,62 @@ class AkShareFetcher:
             # 如果没有传入股票列表，自动获取
             if stock_codes is None:
                 stock_codes = self.get_pending_stocks('analyst')
-            
+
             if not stock_codes:
-                self.logger.info("✅ 分析师评级采集完成" if retry_count == 0 else "✅ 分析师评级补采完成")
+                self.logger.info("分析师评级采集完成" if retry_count == 0 else "分析师评级补采完成")
                 return
-            
+
             total = len(stock_codes)
             self.logger.info(f"第 {retry_count + 1} 轮：共 {total} 只股票待处理")
             success_count = 0
-            
+
             for i, stock_code in enumerate(stock_codes, 1):
                 try:
-                    df = self.fetch_analyst_rating(stock_code)
-                    if not df.empty:
-                        self.mysql_manager.batch_insert_or_update('stock_analyst_expectation', df, ['stock_code', 'publish_date'])
-                        if 'publish_date' in df.columns:
-                            self.update_record(stock_code, 'analyst', df['publish_date'].max())
+                    rating_df, forecast_df = self.fetch_analyst_rating(stock_code)
+
+                    # 保存评级信息
+                    if not rating_df.empty:
+                        self.mysql_manager.batch_insert_or_update(
+                            'stock_analyst_expectation', rating_df,
+                            ['stock_code', 'publish_date', 'institution_name']
+                        )
+                        if 'publish_date' in rating_df.columns:
+                            self.update_record(stock_code, 'analyst', rating_df['publish_date'].max())
                         success_count += 1
+
+                    # 保存盈利预测信息
+                    if not forecast_df.empty:
+                        self.mysql_manager.batch_insert_or_update(
+                            'stock_earnings_forecast', forecast_df,
+                            ['stock_code', 'institution_name', 'publish_date', 'forecast_year']
+                        )
+
                     self.mark_as_processed(stock_code, 'analyst')
 
-                    # 每只股票都加延迟
-                    time.sleep(0.8)
+                    # 随机延迟 1-2 秒
+                    time.sleep(random.uniform(1, 2))
 
-                    if i % 50 == 0:
+                    if i % 30 == 0:
                         self.logger.info(f"已处理 {i}/{total}，成功 {success_count}")
-                        time.sleep(3)
+                        # 每30只额外休息 5-8 秒
+                        time.sleep(random.uniform(5, 8))
                 except Exception as e:
                     self.logger.error(f"处理 {stock_code} 失败：{e}")
-                    time.sleep(2)
-            
+                    time.sleep(random.uniform(3, 5))
+
             self.logger.info(f"本轮完成：成功 {success_count}/{total}")
-            
+
             remaining = self.get_pending_stocks('analyst')
             if not remaining:
-                self.logger.info("✅ 分析师评级全部采集完成")
+                self.logger.info("分析师评级全部采集完成")
                 return
-            
+
             retry_count += 1
             if retry_count <= max_retries:
-                self.logger.info(f"⚠️ 仍有 {len(remaining)} 只股票未处理，5 秒后重试...")
-                time.sleep(5)
-        
-        self.logger.error("❌ 达到最大重试次数，分析师评级采集结束")
+                self.logger.info(f"仍有 {len(remaining)} 只股票未处理，30 秒后重试...")
+                time.sleep(30)
+
+        self.logger.error("达到最大重试次数，分析师评级采集结束")
     
     def close(self):
         """关闭连接"""
@@ -793,12 +896,17 @@ if __name__ == '__main__':
     print("\n" + "=" * 80)
     print("测试 4: AkShare 获取分析师评级")
     print("=" * 80)
-    df = fetcher.fetch_analyst_rating('000001')
-    if not df.empty:
-        print(f"✅ 成功！{len(df)} 条")
-        print(df[['stock_code', 'publish_date', 'institution_name', 'rating_type']].head(3))
+    rating_df, forecast_df = fetcher.fetch_analyst_rating('000001')
+    if not rating_df.empty:
+        print(f"评级数据：{len(rating_df)} 条")
+        print(rating_df[['stock_code', 'publish_date', 'institution_name', 'rating_type']].head(3))
     else:
-        print("❌ 无数据")
-    
+        print("无评级数据")
+    if not forecast_df.empty:
+        print(f"盈利预测：{len(forecast_df)} 条")
+        print(forecast_df.head(3))
+    else:
+        print("无盈利预测数据")
+
     fetcher.close()
     print("\n测试完成！")
