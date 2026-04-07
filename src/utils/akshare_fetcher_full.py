@@ -460,7 +460,7 @@ if __name__ == '__main__':
     df = fetcher.fetch_analyst_rating(test_stock)
     if not df.empty:
         print(f"✅ 成功！{len(df)} 条")
-        print(df[['publish_date', 'institution_name', 'df_rating']].head(3))
+        print(df[['publish_date', 'institution_name', 'rating_type']].head(3))
     else:
         print("❌ 无数据")
     
