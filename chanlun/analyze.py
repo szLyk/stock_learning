@@ -2,7 +2,10 @@
 缠论分析核心算法
 包含：K线包含处理、分型识别、笔识别、中枢识别
 
-参考czsc实现，适配自有数据结构
+参考czsc (https://github.com/waditu/czsc) 实现
+原作者：zengbin93 | 许可：Apache License 2.0
+
+核心算法逻辑参考czsc，数据结构适配自有数据库。
 
 核心算法流程：
 RawBar → remove_include() → NewBar → check_fx() → FX → check_bi() → BI → check_zs() → ZS
